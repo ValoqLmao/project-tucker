@@ -1,17 +1,41 @@
 {
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
-  "phase": "Avatar stage",
-  "focus": "Research is done. First avatar build is live: a placeholder VRM that blinks, breathes, glances around, emotes and moves its mouth to your mic. Next: accounts and keys for the voice stack, then the talk loop.",
+  "phase": "Voice stack",
+  "focus": "Voice provider switched to Fish Audio for its huge community voice library. Researching a host for the API side; waiting on API keys before building the talk loop.",
   "appUrl": "app/",
   "milestones": [
-    { "name": "Public build tracker online", "state": "done" },
-    { "name": "Research: open-source base (verdict: thin app on three-vrm)", "state": "done" },
-    { "name": "Research: voice, LLM and speech-to-text stack", "state": "done" },
-    { "name": "Avatar on screen: blinking, idle motion, expressions", "state": "done" },
-    { "name": "Custom original character model (VRoid Studio)", "state": "todo" },
-    { "name": "Voice loop: mic in, streamed reply, lip sync, interruptions", "state": "todo" },
-    { "name": "Personas and emotion-driven expressions", "state": "todo" },
-    { "name": "Hosting for the API side + custom domain", "state": "todo" }
+    {
+      "name": "Public build tracker online",
+      "state": "done"
+    },
+    {
+      "name": "Research: open-source base (verdict: thin app on three-vrm)",
+      "state": "done"
+    },
+    {
+      "name": "Research: voice, LLM and speech-to-text stack",
+      "state": "done"
+    },
+    {
+      "name": "Avatar on screen: blinking, idle motion, expressions",
+      "state": "done"
+    },
+    {
+      "name": "Custom original character model (VRoid Studio)",
+      "state": "todo"
+    },
+    {
+      "name": "Voice loop: mic in, streamed reply, lip sync, interruptions",
+      "state": "todo"
+    },
+    {
+      "name": "Personas and emotion-driven expressions",
+      "state": "todo"
+    },
+    {
+      "name": "Hosting for the API side + custom domain",
+      "state": "todo"
+    }
   ]
 }
