@@ -11,7 +11,11 @@ import { PERSONAS } from './personas.js';
 const STT_URL =
   'wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000&eot_threshold=0.7&eot_timeout_ms=3000';
 const TTS_URL = 'wss://api.fish.audio/v1/tts/live';
-const LLM_URL = 'https://api.venice.ai/api/v1/chat/completions';
+// Any OpenAI-compatible chat API works. OpenRouter is used when its key is present, otherwise Venice.
+const llmConfig = (env) => env.OPENROUTER_API_KEY
+  ? { url: 'https://openrouter.ai/api/v1/chat/completions', key: env.OPENROUTER_API_KEY, model: env.LLM_MODEL || 'thedrummer/cydonia-24b-v4.1', extra: {} }
+  : { url: 'https://api.venice.ai/api/v1/chat/completions', key: env.VENICE_API_KEY, model: env.LLM_MODEL || env.VENICE_MODEL || 'venice-uncensored-role-play',
+      extra: { venice_parameters: { include_venice_system_prompt: false, disable_thinking: true, strip_thinking_response: true } } };
 export const TTS_SAMPLE_RATE = 24000;
 const MAX_TURNS = 40; // messages of history sent to the model
 
@@ -83,17 +87,18 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
       }
       return;
     }
-    const res = await fetch(LLM_URL, {
+    const llm = llmConfig(env);
+    const res = await fetch(llm.url, {
       method: 'POST',
       signal,
-      headers: { Authorization: 'Bearer ' + env.VENICE_API_KEY, 'content-type': 'application/json' },
+      headers: { Authorization: 'Bearer ' + llm.key, 'content-type': 'application/json' },
       body: JSON.stringify({
-        model: env.VENICE_MODEL || 'venice-uncensored-role-play',
+        model: llm.model,
         stream: true,
-        max_completion_tokens: 220,
+        max_tokens: 220,
         temperature: 0.9,
         messages: [{ role: 'system', content: persona.prompt }, ...history.slice(-MAX_TURNS)],
-        venice_parameters: { include_venice_system_prompt: false, disable_thinking: true, strip_thinking_response: true },
+        ...llm.extra,
       }),
     });
     if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 160)}`);
