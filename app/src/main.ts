@@ -181,7 +181,7 @@ renderer.setAnimationLoop(() => {
     focus.lerp(head, 1 - Math.exp(-dt * 2.5));
     // A camera on a tripod looks dead; a centimetre of slow drift does not.
     const ct = timer.getElapsed();
-    camera.position.set(focus.x * 0.85 + Math.sin(ct * 0.31) * 0.012, focus.y - 0.02 + Math.sin(ct * 0.23) * 0.008, focus.z + 1.5);
+    camera.position.set(focus.x * 0.85 + Math.sin(ct * 0.31) * 0.012, focus.y - 0.02 + Math.sin(ct * 0.23) * 0.008, focus.z + 1.5 * (1 - 0.08 * avatar.face.pose.lean)); // drifts closer on warm or intimate moments
     camera.lookAt(focus.x, focus.y - 0.1, focus.z);
   }
   renderer.render(scene, camera);

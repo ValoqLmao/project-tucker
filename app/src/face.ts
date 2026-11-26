@@ -64,6 +64,22 @@ export const EXPRESSIONS: Record<string, Recipe> = {
   attentive: { browUp: 0.2, mouthSmile: 0.2 },
 };
 
+/**
+ * What the rest of her does with each expression: head pitch (+ is chin down) and roll in radians,
+ * where the eyes drift (metres at the viewer's distance), and how much she leans toward the viewer.
+ * A feeling that only reaches the face looks pasted on.
+ */
+type Pose = { pitch?: number; roll?: number; gazeX?: number; gazeY?: number; lean?: number };
+const POSES: Record<string, Pose> = {
+  warm: { roll: 0.03, lean: 0.35 }, happy: { lean: 0.25 }, laughing: { pitch: -0.05 }, excited: { lean: 0.35 },
+  teasing: { roll: 0.08, gazeX: 0.1, lean: 0.2 }, smug: { pitch: -0.06, roll: -0.03 }, flirty: { roll: 0.06, pitch: 0.03, lean: 0.7 },
+  shy: { pitch: 0.07, roll: 0.04, gazeX: 0.16, gazeY: -0.14 }, playful: { roll: 0.09 }, curious: { roll: 0.1, lean: 0.45 },
+  surprised: { pitch: -0.04 }, thinking: { roll: -0.05 }, concerned: { roll: 0.05, pitch: 0.02, lean: 0.35 },
+  sad: { pitch: 0.08, gazeY: -0.12 }, sigh: { pitch: 0.05, gazeY: -0.06 }, pout: { roll: -0.07, gazeX: -0.15 },
+  annoyed: { roll: -0.04, gazeX: 0.08 }, angry: { pitch: 0.03, lean: 0.2 }, deadpan: {}, soft: { roll: 0.02, lean: 0.25 },
+  attentive: { roll: 0.05, lean: 0.25 },
+};
+
 // What each expression means in VRM-preset terms, for models without detailed morphs.
 const PRESET_FALLBACK: Record<string, [string, number]> = {
   warm: ['relaxed', 0.3], happy: ['happy', 0.45], laughing: ['happy', 0.7], excited: ['happy', 0.5],
@@ -96,6 +112,10 @@ export class FaceRig {
   private micro: { recipe: Recipe; t: number; dur: number } | null = null;
   private microIn = 2;
   private browFlash = 0;
+  private t = Math.random() * 100;
+
+  /** Head, gaze and lean that go with the current expression; eased, read by the avatar and camera. */
+  readonly pose = { pitch: 0, roll: 0, gazeX: 0, gazeY: 0, lean: 0 };
 
   constructor(private vrm: VRM) {
     const byName = new Map<string, Target[]>();
@@ -130,7 +150,7 @@ export class FaceRig {
   flashBrows() { this.browFlash = 1; }
 
   /** How closed the expression already makes her eyes (0..1), so blinking can make room. */
-  get eyesNarrowed() { return Math.min(1, (this.value.eyeSmile ?? 0) + (this.value.eyeSoft ?? 0) * 0.5 + (this.value.wink ?? 0) * 0.5); }
+  get eyesNarrowed() { return Math.min(1, (this.value.eyeSmile ?? 0) + (this.value.eyeSoft ?? 0) * 0.5 + (this.value.eyeHalf ?? 0) * 0.5 + (this.value.wink ?? 0) * 0.5); }
   /** How much of the mouth the expression is using (0..1), so speech shapes can make room. */
   get mouthBusy() { return Math.min(1, (this.value.mouthOpenSmile ?? 0) + (this.value.mouthPout ?? 0) + (this.value.tongue ?? 0)); }
 
@@ -171,19 +191,32 @@ export class FaceRig {
     // The resting face steps back while a reaction is up, so two moods never fight.
     const restLevel = this.resting.strength * (1 - Math.min(1, level * 1.6));
 
+    // Body language for the feeling. The head arrives after the face, as it does on people.
+    this.t += dt;
+    const pa = active ? POSES[this.name] ?? {} : {}, pr = POSES[this.resting.name] ?? {};
+    for (const k of ['pitch', 'roll', 'gazeX', 'gazeY', 'lean'] as const) {
+      const target = (pa[k] ?? 0) * Math.min(1, level * 1.3) + (pr[k] ?? 0) * restLevel;
+      this.pose[k] = damp(this.pose[k], target, k === 'lean' ? 1.5 : 3, dt);
+    }
+
     if (!this.detailed) return this.updatePresets(dt, level, restLevel);
 
     for (const channel of this.targets.keys()) {
       let target = (active?.[channel] ?? 0) * level + (rest[channel] ?? 0) * restLevel;
       if (this.micro) target += (this.micro.recipe[channel] ?? 0) * microLevel;
-      if (channel === 'browUp') target += this.browFlash * 0.35;
+      if (channel === 'browUp') target += this.browFlash * 0.35 + Math.max(0, Math.sin(this.t * 0.9) * Math.sin(this.t * 0.37)) * 0.06;
+      // A resting face still drifts: mouth corners and lids are never perfectly still.
+      if (channel === 'mouthSmile') target += Math.max(0, Math.sin(this.t * 0.31 + 1) * Math.sin(this.t * 0.13)) * 0.07;
+      if (channel === 'eyeSoft') target += Math.max(0, Math.sin(this.t * 0.23 + 2)) * 0.04;
       // While she is mid-word, mouth poses give way so the speech shapes stay readable.
       if (speaking && (channel === 'mouthOpenSmile' || channel === 'mouthPout' || channel === 'tongue')) target *= 1 - Math.min(1, energy * 1.5);
       if (speaking && (channel === 'mouthSmile' || channel === 'smirk' || channel === 'mouthFrown')) target *= 1 - 0.35 * Math.min(1, energy * 1.5);
       target = Math.min(1, target);
       const cur = this.value[channel] ?? 0;
       // Faces move into an expression faster than they leave it; blush is slow both ways.
-      const rate = channel === 'blush' ? 1.2 : target > cur ? 9 : 2.8;
+      // Eyes react first, then brows, then the mouth.
+      const eyes = channel.startsWith('eye') || channel === 'wink' || channel === 'pupilSmall', brows = channel.startsWith('brow');
+      const rate = channel === 'blush' ? 1.2 : target > cur ? (eyes ? 13 : brows ? 9 : 6) : eyes ? 3.2 : brows ? 2.8 : 2.3;
       const v = (this.value[channel] = damp(cur, target, rate, dt));
       for (const t of this.targets.get(channel)!) t.influences[t.index] = v;
     }

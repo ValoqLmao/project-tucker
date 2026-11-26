@@ -148,6 +148,7 @@ export class Avatar {
   /** React with a named expression (see EXPRESSIONS in face.ts). */
   setEmotion(expression: string, strength = 0.6) {
     this.face.show(expression, strength);
+    this.blinkIn = Math.min(this.blinkIn, 0.06); // people blink as their expression changes, and it hides the switch
     if (expression === 'surprised') this.blinkIn = 0.7; // wide eyes first, then a blink
   }
 
@@ -256,9 +257,9 @@ export class Avatar {
     add('neck', f * (li * 0.02 + nodding * 0.35), wander(t * 0.25, 4) * 0.015 + follow * 0.4, f * li * 0.02);
     add(
       'head',
-      f * (wander(t * 0.3, 5) * 0.012 + nodding - li * 0.015),
+      f * (wander(t * 0.3, 5) * 0.012 + nodding - li * 0.015 + this.face.pose.pitch),
       wander(t * 0.22, 6) * (0.02 + sp * 0.015) + follow * 0.6,
-      f * (wander(t * 0.17, 7) * 0.012 + li * 0.045),
+      f * (wander(t * 0.17, 7) * 0.012 + li * 0.02 + this.face.pose.roll),
     );
     if (clips && !this.fingersAnimated) this.relaxFingers(set, 0, 0);
 
@@ -293,6 +294,8 @@ export class Avatar {
       this.saccadeIn = 0.8 + Math.random() * 2;
     }
     const want = camera.getWorldPosition(new THREE.Vector3()).add(this.glance).add(this.saccade);
+    want.x += this.face.pose.gazeX;
+    want.y += this.face.pose.gazeY;
     this.lookTarget.position.lerp(want, 1 - Math.exp(-dt * 24)); // eyes jump, they do not pan
 
     if (!ex) { this.vrm.update(Math.min(dt, 1 / 30)); return this.face.update(dt, this.activity === 'speaking', en); }
