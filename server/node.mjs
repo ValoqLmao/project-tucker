@@ -8,6 +8,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { startSession } from './src/session.js';
 import { personaList } from './src/personas.js';
 import { FISH_OFFICIAL, usableVoice, publicVoice } from './src/voices.js';
+import { makePtt } from './src/ptt.js';
 import { issueToken, checkToken, sameString, tokenSecret, makeLimiter } from './src/auth.js';
 
 const PORT = Number(process.env.PORT || 8787);
@@ -39,6 +40,10 @@ const store = env.RECORD === 'off' ? null : {
     };
   },
 };
+// Game mode can hold the game's push-to-talk key while the voice plays (Windows). Only when this
+// server is reachable from this machine alone, since it presses keys on it. PTT_KEY=off disables it.
+const PTT_KEY = (env.PTT_KEY || 'v').toLowerCase();
+const ptt = ['127.0.0.1', 'localhost', '::1'].includes(HOST) && PTT_KEY !== 'off' ? makePtt(PTT_KEY, (...a) => console.log(...a)) : null;
 const voiceCache = new Map(); // search term -> { at, body }
 const GATED = !!env.ACCESS_CODE; // optional locally; the Cloudflare deployment requires it
 const allowGuess = makeLimiter();
@@ -69,7 +74,7 @@ const server = http.createServer(async (req, res) => {
   const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 
   if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-methods': 'GET,POST', 'access-control-allow-headers': 'content-type' }); return res.end(); }
-  if (url.pathname === '/config') return json(200, { gate: GATED });
+  if (url.pathname === '/config') return json(200, { gate: GATED, ptt: ptt ? PTT_KEY.toUpperCase() : null });
   if (url.pathname === '/auth' && req.method === 'POST') {
     if (!GATED) return json(200, { token: '' });
     if (!allowGuess(req.socket.remoteAddress)) return json(429, { error: 'Too many attempts. Try again in a few minutes.' });
@@ -106,7 +111,7 @@ const server = http.createServer(async (req, res) => {
   json(404, { error: 'not found' });
 });
 
-const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 1024 * 1024 });
 server.on('upgrade', async (req, socket, head) => {
   const origin = req.headers.origin;
   if (new URL(req.url, 'http://x').pathname !== '/session' || !origin || !ALLOWED.includes(origin)) return socket.destroy();
@@ -116,7 +121,7 @@ server.on('upgrade', async (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => {
     sessionsByIp.set(ip, (sessionsByIp.get(ip) || 0) + 1);
     ws.on('close', () => sessionsByIp.set(ip, Math.max(0, (sessionsByIp.get(ip) || 1) - 1)));
-    startSession({ client: wrap(ws), openUpstream, env, store, log: (...a) => console.log(new Date().toISOString().slice(11, 23), ...a) });
+    startSession({ client: wrap(ws), openUpstream, env, store, ptt, log: (...a) => console.log(new Date().toISOString().slice(11, 23), ...a) });
   });
 });
 

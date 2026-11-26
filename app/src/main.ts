@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Avatar } from './avatar';
 import { VoiceSession, type ServerEvent } from './voice';
 import { setupVoicePicker } from './voicePicker';
+import { setupGame } from './game';
 import { Stage, SCENES } from './stage';
 
 // Where the session server lives. Empty in production builds until a backend is deployed.
@@ -51,6 +52,7 @@ $('voiceBtn').onclick = () => picker.open();
 const BASELINE: Record<string, [string, number]> = { mommy: ['soft', 0.6], goblin: ['annoyed', 0.4] };
 const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['soft', 0.3]));
 let token = ''; // proof of the access code, when the server asks for one
+let pttKey: string | null = null; // the key the server can hold for push to talk, when it runs on this PC
 let userTalking = false;
 let thinking = false; // between the end of their turn and the first sound of her reply
 const focus = new THREE.Vector3(0, 1.4, 0); // smoothed head position the camera frames
@@ -175,6 +177,8 @@ function onEvent(e: ServerEvent) {
     case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ,']+\]\s*|["“”*]/gi, ''); her.scrollTop = her.scrollHeight; break;
     case 'emotion': avatar?.setEmotion(e.value, e.strength ?? 0.6); break;
     case 'reply_end': case 'interrupt': thinking = false; break;
+    case 'heard': you.textContent = e.text; break;
+    case 'saw': note.textContent = `On screen: ${e.text}`; break;
     case 'error': thinking = false; note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;
   }
   captions.hidden = false;
@@ -184,12 +188,21 @@ async function ensureSession(): Promise<VoiceSession> {
   if (session) return session;
   const s = new VoiceSession(API.replace(/^http/, 'ws') + '/session?t=' + encodeURIComponent(token));
   s.onEvent = onEvent;
-  s.onClose = () => { session = null; talk.setAttribute('aria-pressed', 'false'); talk.textContent = 'Start talking'; };
+  s.onClose = () => { session = null; talk.setAttribute('aria-pressed', 'false'); talk.textContent = 'Start talking'; game.sessionClosed(); };
   await s.connect();
   s.configure(personaSel.value, picker.choices[personaSel.value] ?? null);
   note.textContent = '';
   return (session = s);
 }
+
+const game = setupGame({
+  dialog: $<HTMLDialogElement>('game'),
+  button: $<HTMLButtonElement>('gameBtn'),
+  pttKey: () => pttKey,
+  name: () => persona().name,
+  ensureSession,
+  session: () => session,
+});
 
 talk.onclick = async () => {
   try {
@@ -238,7 +251,11 @@ renderer.setAnimationLoop(() => {
   stage.render(dt);
 });
 
-enter().then(() => { setupModels(); loadPersonas(); });
+enter().then(() => {
+  setupModels();
+  loadPersonas();
+  if (API) fetch(`${API}/config`).then((r) => r.json()).then((c) => { pttKey = c.ptt || null; }).catch(() => {});
+});
 
 // Scene picker
 const sceneSel = $<HTMLSelectElement>('scene');

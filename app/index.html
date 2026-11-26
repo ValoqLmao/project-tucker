@@ -48,6 +48,15 @@
   .vact { display: flex; flex-direction: column; gap: 6px; } .vact button { padding: 5px 12px; font-size: 13px; white-space: nowrap; }
   .vrow.on .vuse { background: #ff7ab8; color: #14121b; border-color: #ff7ab8; }
   .vfoot { display: flex; justify-content: space-between; gap: 8px; }
+  #game { overflow-y: auto; }
+  #gameBtn[aria-pressed="true"] { border-color: #ff7ab8; color: #ff7ab8; }
+  .grow { display: grid; gap: 4px; font-size: 14px; } .grow select { border-radius: 10px; width: 100%; }
+  .gcheck { display: flex; gap: 8px; align-items: center; font-size: 14px; } .gcheck[hidden] { display: none; }
+  .gcheck input { width: 18px; height: 18px; padding: 0; flex: none; }
+  .gstatus { margin: 0; min-height: 1.3em; font-size: 13px; color: #8fd3ff; }
+  #game details { font-size: 13px; color: #c9c2d6; } #game summary { cursor: pointer; }
+  #game ol { margin: 8px 0 0; padding-left: 20px; display: grid; gap: 6px; }
+  .gstart { background: #ff7ab8; color: #14121b; border-color: #ff7ab8; font-weight: 600; }
 </style>
 </head>
 <body>
@@ -59,11 +68,13 @@
     <button id="voiceBtn" type="button">Voice</button>
     <select id="model" aria-label="Character model" hidden></select>
     <select id="scene" aria-label="Scene"></select>
+    <button id="gameBtn" type="button" aria-pressed="false">Game</button>
     <button id="talk" aria-pressed="false">Start talking</button>
     <form id="say"><input id="text" placeholder="or type to her…" autocomplete="off" aria-label="Message"><button>Send</button></form>
   </div>
 </div>
 <dialog id="voices"></dialog>
+<dialog id="game"></dialog>
 <div id="gate" hidden>
   <form id="gateForm">
     <h2>Before you come in</h2>

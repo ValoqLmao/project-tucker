@@ -9,7 +9,23 @@ export type ServerEvent =
   | { type: 'reply_start' | 'reply_end' | 'interrupt'; id: number }
   | { type: 'reply_text'; id: number; delta: string }
   | { type: 'emotion'; value: string; strength?: number }
+  | { type: 'heard' | 'saw'; text: string }
   | { type: 'error'; where: string; message: string };
+
+export type GameConfig = { on: boolean; mode: 'name' | 'auto' | 'always'; react: boolean };
+
+// A clock that keeps its pace when the tab is in the background (behind a fullscreen game, say),
+// where the browser slows ordinary timers down to as little as one a minute.
+let clock: Worker | null = null;
+const tickers = new Set<() => void>();
+export function onTick(fn: () => void): () => void {
+  if (!clock) {
+    clock = new Worker(URL.createObjectURL(new Blob(['setInterval(() => postMessage(0), 200)'], { type: 'text/javascript' })));
+    clock.onmessage = () => tickers.forEach((f) => f());
+  }
+  tickers.add(fn);
+  return () => tickers.delete(fn);
+}
 
 const VOICE_RATE = 24000; // what the server sends
 const MIC_RATE = 16000; // what the server expects
@@ -47,6 +63,17 @@ export class VoiceSession {
   private lip: WLipSyncAudioNode | null = null;
   private micCtx: AudioContext | null = null;
   private micStream: MediaStream | null = null;
+  // Game mode
+  private teamCtx: AudioContext | null = null;
+  private vcDest: MediaStreamAudioDestinationNode | null = null;
+  private vcAudio: HTMLAudioElement | null = null;
+  private passMic: MediaStream | null = null;
+  private passSource: MediaStreamAudioSourceNode | null = null;
+  /** Hold the push-to-talk key (through the server) for as long as the voice is playing. */
+  ptt = false;
+  private held = false;
+  private lastSound = 0;
+  private stopTick: (() => void) | null = null;
 
   constructor(private url: string) {
     this.analyser.fftSize = 1024;
@@ -66,9 +93,13 @@ export class VoiceSession {
     return new Promise((resolve, reject) => {
       const ws = (this.ws = new WebSocket(this.url));
       ws.binaryType = 'arraybuffer';
-      ws.onopen = () => resolve();
+      ws.onopen = () => {
+        // Let go of push-to-talk shortly after the last of the voice has played.
+        this.stopTick = onTick(() => { if (this.held && !this.playing.size && performance.now() - this.lastSound > 450) this.release(); });
+        resolve();
+      };
       ws.onerror = () => reject(new Error('Could not reach the session server.'));
-      ws.onclose = () => { this.stopMic(); this.onClose(); };
+      ws.onclose = () => { this.stopTick?.(); this.stopMic(); this.stopTeam(); this.routeToVoiceChat(null, false).catch(() => {}); this.onClose(); };
       ws.onmessage = (m) => {
         if (typeof m.data !== 'string') return this.play(m.data as ArrayBuffer);
         const e = JSON.parse(m.data) as ServerEvent;
@@ -93,11 +124,73 @@ export class VoiceSession {
     this.micStream = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true, channelCount: 1 },
     });
-    const ctx = (this.micCtx = new AudioContext({ sampleRate: MIC_RATE }));
+    this.micCtx = await this.capture(this.micStream, (pcm) => { if (this.ws.readyState === WebSocket.OPEN) this.ws.send(pcm); });
+  }
+
+  /** Feed a stream to `onFrame` as 80 ms frames of PCM16 mono 16 kHz. */
+  private async capture(stream: MediaStream, onFrame: (pcm: ArrayBuffer) => void): Promise<AudioContext> {
+    const ctx = new AudioContext({ sampleRate: MIC_RATE });
     await ctx.audioWorklet.addModule(URL.createObjectURL(new Blob([micWorklet], { type: 'text/javascript' })));
-    const node = new AudioWorkletNode(ctx, 'mic');
-    node.port.onmessage = (m) => { if (this.ws.readyState === WebSocket.OPEN) this.ws.send(m.data); };
-    ctx.createMediaStreamSource(this.micStream).connect(node);
+    const node = new AudioWorkletNode(ctx, 'mic', { channelCount: 1, channelCountMode: 'explicit' }); // stereo sources are mixed down
+    node.port.onmessage = (m) => onFrame(m.data);
+    ctx.createMediaStreamSource(stream).connect(node);
+    return ctx;
+  }
+
+  // ---- game mode ------------------------------------------------------------
+  setGame(cfg: GameConfig) { this.sendJson({ type: 'game', ...cfg }); }
+
+  /** A screenshot (base64 JPEG) for him to look at. Skipped if the last ones are still queued. */
+  sendScreen(jpeg: string) { if (this.ws?.readyState === WebSocket.OPEN && this.ws.bufferedAmount < 1_000_000) this.sendJson({ type: 'screen', jpeg }); }
+
+  /**
+   * Listen to a game's voice chat. `hearsItself` is for sources that include this page's own
+   * sound (system audio): they are muted while he speaks, so he never answers himself.
+   */
+  async startTeam(stream: MediaStream, hearsItself: boolean) {
+    this.stopTeam();
+    this.teamCtx = await this.capture(stream, (pcm) => {
+      if (this.ws.readyState !== WebSocket.OPEN) return;
+      if (hearsItself && (this.playing.size || performance.now() - this.lastSound < 400)) return;
+      const tagged = new Uint8Array(pcm.byteLength + 1);
+      tagged[0] = 1; // channel 1: voice chat
+      tagged.set(new Uint8Array(pcm), 1);
+      this.ws.send(tagged);
+    });
+  }
+  stopTeam() { this.teamCtx?.close(); this.teamCtx = null; }
+
+  /**
+   * Also play the voice into another output device: a virtual cable that a game uses as its
+   * microphone. With `withMic` the real microphone goes there too, so the person can still talk.
+   */
+  async routeToVoiceChat(deviceId: string | null, withMic: boolean) {
+    this.vcAudio?.pause();
+    this.vcAudio = null;
+    this.passSource?.disconnect();
+    this.passSource = null;
+    this.passMic?.getTracks().forEach((t) => t.stop());
+    this.passMic = null;
+    if (this.vcDest) { try { this.analyser.disconnect(this.vcDest); } catch {} this.vcDest = null; }
+    if (!deviceId) return;
+    await this.out.resume();
+    const dest = (this.vcDest = this.out.createMediaStreamDestination());
+    this.analyser.connect(dest);
+    if (withMic) {
+      this.passMic = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: false, noiseSuppression: true, autoGainControl: true } });
+      this.passSource = this.out.createMediaStreamSource(this.passMic);
+      this.passSource.connect(dest); // to the cable only, never to the speakers
+    }
+    const a = (this.vcAudio = new Audio());
+    a.srcObject = dest.stream;
+    await a.setSinkId(deviceId);
+    await a.play();
+  }
+
+  private release() {
+    if (!this.held) return;
+    this.held = false;
+    this.sendJson({ type: 'ptt', down: false });
   }
 
   stopMic() {
@@ -141,17 +234,25 @@ export class VoiceSession {
     src.buffer = buf;
     src.connect(this.analyser);
     // Chunks are scheduled back to back; a small lead absorbs network jitter at the start.
-    this.nextAt = Math.max(this.nextAt, this.out.currentTime + 0.04);
+    let lead = 0.04;
+    if (this.ptt && !this.held) {
+      this.held = true;
+      this.sendJson({ type: 'ptt', down: true });
+      lead = 0.25; // give the game a moment to open the microphone before the first word
+    }
+    this.lastSound = performance.now();
+    this.nextAt = Math.max(this.nextAt, this.out.currentTime + lead);
     src.start(this.nextAt);
     this.nextAt += buf.duration;
     this.playing.add(src);
-    src.onended = () => this.playing.delete(src);
+    src.onended = () => { this.playing.delete(src); this.lastSound = performance.now(); };
   }
 
   private flush() {
     for (const s of this.playing) { s.onended = null; try { s.stop(); } catch {} }
     this.playing.clear();
     this.nextAt = 0;
+    this.release();
   }
 
   private sendJson(o: unknown) {

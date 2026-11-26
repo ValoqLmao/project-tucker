@@ -1,12 +1,14 @@
 // One voice conversation. Runtime-agnostic: the host (Node, Cloudflare) supplies the sockets.
 //
-// Browser -> server:  binary = mic audio (PCM16 mono 16 kHz, ~80 ms frames)
-//                     JSON   = {type:'config', persona, voice} | {type:'text', text} | {type:'interrupt'}
+// Browser -> server:  binary = mic audio (PCM16 mono 16 kHz, ~80 ms frames). A frame of odd length
+//                              starts with a channel byte: 1 = the game's voice chat (game mode).
+//                     JSON   = {type:'config', persona, voice} | {type:'text', text} | {type:'interrupt'} |
+//                              {type:'game', on, mode, react} | {type:'screen', jpeg} | {type:'ptt', down}
 // Server -> browser:  binary = voice audio for the current reply (PCM16 mono 24 kHz)
 //                     JSON   = user_start | user_partial | user_final | reply_start | reply_text |
-//                              emotion | reply_end | interrupt | error
+//                              emotion | reply_end | interrupt | error | heard | saw
 import { encode, decode } from '@msgpack/msgpack';
-import { PERSONAS } from './personas.js';
+import { PERSONAS, GAME_MODE } from './personas.js';
 import { voiceAllowed } from './voices.js';
 
 const STT_URL =
@@ -20,6 +22,21 @@ const llmConfig = (env) => env.OPENROUTER_API_KEY
       fallbacks: ['thedrummer/cydonia-24b-v4.1', 'sao10k/l3.1-euryale-70b'], extra: {} }
   : { url: 'https://api.venice.ai/api/v1/chat/completions', key: env.VENICE_API_KEY, model: env.LLM_MODEL || env.VENICE_MODEL || 'venice-uncensored-role-play',
       fallbacks: [], extra: { venice_parameters: { include_venice_system_prompt: false, disable_thinking: true, strip_thinking_response: true } } };
+// Game mode: the model that looks at the screen and says what is on it. The persona's own model
+// only ever reads that description, so it does not have to be one that accepts images.
+const visionConfig = (env) => env.OPENROUTER_API_KEY
+  ? { url: 'https://openrouter.ai/api/v1/chat/completions', key: env.OPENROUTER_API_KEY, model: env.VISION_MODEL || 'anthropic/claude-haiku-5.5',
+      extra: { reasoning: { enabled: false } } } // thinking first would use up the whole answer on a two-sentence job
+  : env.VISION_MODEL ? { url: 'https://api.venice.ai/api/v1/chat/completions', key: env.VENICE_API_KEY, model: env.VISION_MODEL, extra: {} } : null;
+const EYES = `You are the eyes of a voice companion who is sitting in on someone's game. You get a screenshot of the player's screen and what you said about the previous one.
+Write one or two plain sentences, 45 words at most, saying what is on screen right now for someone who cannot see it: which game or app, what the player is doing, and whatever is readable of the score, round, health, kill feed, who just died or won, and any text chat. No guessing at what is not visible, no advice.
+Then finish with a last line that is exactly "NOTABLE: yes" or "NOTABLE: no". Say yes only when something has happened since the previous look that a friend watching would blurt out about: a kill, a death, a clutch, a bad miss, a round or match won or lost, something funny or embarrassing. A screen that looks much the same is no.`;
+const MAX_SCREEN_CHARS = 700_000; // base64 JPEG, about half a megabyte
+const LOOK_EVERY_MS = 12_000; // how often he glances at the screen unprompted
+const QUIET_AFTER_SPEAKING_MS = 8_000; // no unprompted reaction this soon after he last spoke
+const FOLLOW_UP_MS = 12_000; // after he speaks, the next thing said may be an answer to him
+const SILENT_NOTE = '[You may stay quiet here. If that was not said to you, or you have nothing to add, answer with exactly [silent] and nothing else.]';
+const REACT_NOTE = '[Nobody is talking to you. If what just happened deserves a reaction, say one short line out loud. Otherwise answer with exactly [silent].]';
 export const TTS_SAMPLE_RATE = 24000;
 const MAX_TURNS = 40; // messages of history sent to the model
 
@@ -100,15 +117,19 @@ const MAX_CONVERSATION_BYTES = 400 * 1024 * 1024; // ~2.3 hours of combined audi
  * @param client       {send(data), close()} plus assignable onmessage(data, isBinary) / onclose()
  * @param openUpstream (url, headers) => Promise<same socket shape>
  * @param env          {DEEPGRAM_API_KEY, FISH_API_KEY, OPENROUTER_API_KEY | VENICE_API_KEY, LLM_MODEL?, FISH_MODEL?, LLM_STUB?}
+ * @param ptt          optional (down: boolean) => void: hold or release the push-to-talk key on this machine
  * @param store        optional {put(key, data, contentType), open?(key, contentType, headerFor)}: where
  *                     conversations are recorded. Each session gets a folder holding transcript.json,
  *                     one WAV per spoken turn, and conversation.wav: the whole exchange in order.
  */
-export function startSession({ client, openUpstream, env, store = null, log = () => {} }) {
+export function startSession({ client, openUpstream, env, store = null, ptt = null, log = () => {} }) {
   let persona = PERSONAS.mommy;
   let voice = null;
   const history = [];
-  let stt = null, sttOpening = null, sttBacklog = [];
+  // One ear per audio channel, each with its own speech-to-text connection.
+  const ear = (who) => ({ who, stt: null, opening: null, backlog: [], preroll: [], capturing: null, capturedBytes: 0, talking: false });
+  const ears = { mic: ear('mic'), team: ear('team') };
+  const game = { on: false, mode: 'name', react: false };
   let reply = null, replySeq = 0, warmTts = null, closed = false;
 
   const send = (o) => { if (!closed) try { client.send(JSON.stringify(o)); } catch {} };
@@ -121,13 +142,15 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
   const folder = `recordings/${sessionId.slice(0, 10)}/${sessionId}`;
   const record = { id: sessionId, startedAt: startedAt.toISOString(), llm: llmConfig(env).model, turns: [] };
   let turnSeq = 0;
+  // Game mode is never recorded: the other people in a voice channel have not agreed to it.
+  const rec = () => (game.on ? null : store);
   const putSafe = (key, data, type) => { try { Promise.resolve(store.put(key, data, type)).catch((e) => log('recording failed', e?.message || e)); } catch (e) { log('recording failed', e?.message || e); } };
   const saveAudio = (name, chunks, rate) => {
-    if (!store || !chunks?.length) return null;
+    if (!rec() || !chunks?.length) return null;
     putSafe(`${folder}/${name}`, wav(chunks, rate), 'audio/wav');
     return name;
   };
-  const saveTranscript = () => { if (store && record.turns.length) putSafe(`${folder}/transcript.json`, JSON.stringify(record, null, 1), 'application/json'); };
+  const saveTranscript = () => { if (rec() && record.turns.length) putSafe(`${folder}/transcript.json`, JSON.stringify(record, null, 1), 'application/json'); };
   const pad = (n) => String(n).padStart(3, '0');
 
   // conversation.wav: every spoken turn back to back, in the order it happened, as one file you can
@@ -136,7 +159,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
   const GAP = new Uint8Array(Math.round(TTS_SAMPLE_RATE * 0.35) * 2); // a breath of silence between turns
   /** Append a turn to conversation.wav. Returns where it starts, in seconds, or null if not recorded. */
   function addToConversation(chunks, rate) {
-    if (!store?.open || !chunks?.length || convoBytes > MAX_CONVERSATION_BYTES) return null;
+    if (!rec()?.open || !chunks?.length || convoBytes > MAX_CONVERSATION_BYTES) return null;
     try {
       convo ??= store.open(`${folder}/conversation.wav`, 'audio/wav', (size) => wavHeader(size, TTS_SAMPLE_RATE));
       const at = convoBytes / (TTS_SAMPLE_RATE * 2);
@@ -151,48 +174,140 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
       return Math.round(at * 100) / 100;
     } catch (e) { log('recording failed', e?.message || e); return null; }
   }
-  let preroll = [], capturing = null, capturedBytes = 0;
 
   // ---- speech to text -------------------------------------------------------
-  function onMicAudio(frame) {
+  function onAudio(e, frame) {
     // The app sends 2,560-byte frames (80 ms). Anything much larger is not from the app: drop it
     // rather than forward it or hold it in memory.
     if (frame.length > MAX_FRAME_BYTES) return;
-    if (store) {
-      if (capturing) {
-        if (capturedBytes + frame.length <= MAX_TURN_BYTES) { capturing.push(frame); capturedBytes += frame.length; }
+    if (rec() && e === ears.mic) {
+      if (e.capturing) {
+        if (e.capturedBytes + frame.length <= MAX_TURN_BYTES) { e.capturing.push(frame); e.capturedBytes += frame.length; }
       } else {
-        preroll.push(frame);
-        if (preroll.length > PREROLL_FRAMES) preroll.shift();
+        e.preroll.push(frame);
+        if (e.preroll.length > PREROLL_FRAMES) e.preroll.shift();
       }
     }
-    if (stt) return stt.send(frame);
-    if (sttBacklog.length < 100) sttBacklog.push(frame);
-    sttOpening ??= openUpstream(STT_URL, { Authorization: 'Token ' + env.DEEPGRAM_API_KEY }).then((s) => {
+    if (e.stt) return e.stt.send(frame);
+    if (e.backlog.length < 100) e.backlog.push(frame);
+    // Telling the recogniser his name makes it far likelier to be heard right when someone calls him.
+    const names = [persona.name, ...(persona.heardAs || [])].map((n) => '&keyterm=' + encodeURIComponent(n)).join('');
+    e.opening ??= openUpstream(STT_URL + names, { Authorization: 'Token ' + env.DEEPGRAM_API_KEY }).then((s) => {
       if (closed) return s.close();
-      stt = s;
-      s.onmessage = (data, isBinary) => { if (!isBinary) onStt(JSON.parse(data.toString())); };
-      s.onclose = () => { stt = null; sttOpening = null; };
-      for (const f of sttBacklog) s.send(f);
-      sttBacklog = [];
-    }).catch((e) => { sttOpening = null; sttBacklog = []; fail('stt', e); });
+      e.stt = s;
+      s.onmessage = (data, isBinary) => { if (!isBinary) onStt(e, JSON.parse(data.toString())); };
+      s.onclose = () => { if (e.stt === s) { e.stt = null; e.opening = null; e.talking = false; } };
+      for (const f of e.backlog) s.send(f);
+      e.backlog = [];
+    }).catch((err) => { e.opening = null; e.backlog = []; fail('stt', err); });
+  }
+  /** Drop the speech-to-text connections; they reopen, with the current name, on the next audio. */
+  function resetEars() {
+    for (const e of Object.values(ears)) { try { e.stt?.close(); } catch {} e.stt = null; e.opening = null; e.talking = false; e.capturing = null; e.preroll = []; }
   }
 
-  function onStt(m) {
+  function onStt(e, m) {
     if (m.type === 'Error') return fail('stt', m.description || m.code);
     if (m.type !== 'TurnInfo') return;
     if (m.event === 'StartOfTurn') {
+      e.talking = true;
+      // In a voice channel people talk to each other all the time: that must not cut him off.
+      if (game.on) { if (game.mode !== 'name') lookAtScreen(); return; }
       interrupt(); // they started talking: stop talking over them
       send({ type: 'user_start' });
-      if (store && !capturing) { capturing = preroll; capturedBytes = preroll.reduce((n, f) => n + f.length, 0); preroll = []; }
+      if (rec() && !e.capturing) { e.capturing = e.preroll; e.capturedBytes = e.preroll.reduce((n, f) => n + f.length, 0); e.preroll = []; }
       warmTts ??= openTts(); // connecting takes ~300 ms, so do it while they speak
     } else if (m.event === 'Update' || m.event === 'TurnResumed') {
-      send({ type: 'user_partial', text: m.transcript });
+      if (!game.on) return send({ type: 'user_partial', text: m.transcript });
+      // His name came up: get a fresh look at the screen and a voice connection while they finish.
+      if (named(m.transcript)) { lookAtScreen(); warmTts ??= openTts(); }
     } else if (m.event === 'EndOfTurn') {
-      const audio = capturing;
-      capturing = null;
-      if (m.transcript.trim()) respond(m.transcript.trim(), audio);
+      e.talking = false;
+      const audio = e.capturing;
+      e.capturing = null;
+      const text = m.transcript.trim();
+      if (!text) return;
+      if (game.on) heard(e, text);
+      else respond(text, { audio });
     }
+  }
+
+  // ---- game mode ------------------------------------------------------------
+  let overheard = []; // voice chat that was not for him, handed to the model with his next turn
+  let lastSpokeAt = 0, lastLookAt = 0, screen = null, scene = { text: '', at: 0, of: 0 }, looking = null, visionWarned = false, watch = null;
+  const named = (text) => new RegExp('\\b(' + [persona.name, ...(persona.heardAs || [])].join('|') + ')\\b', 'i').test(text);
+  const anyoneTalking = () => ears.mic.talking || ears.team.talking;
+
+  /** Something was said in the channel: answer it, maybe answer it, or just remember it. */
+  function heard(e, text) {
+    const line = (e === ears.mic ? 'Host: ' : 'Teammate: ') + text;
+    send({ type: 'heard', text: line });
+    const direct = game.mode === 'always' || named(text);
+    const maybe = !direct && !reply && (game.mode === 'auto' || Date.now() - lastSpokeAt < FOLLOW_UP_MS);
+    if (direct || maybe) return respond(line, { soft: maybe });
+    overheard.push(line);
+    if (overheard.length > 10) overheard.shift();
+  }
+
+  /** Have the vision model describe the newest screenshot. Resolves to whether something notable happened. */
+  function lookAtScreen() {
+    const v = visionConfig(env);
+    if (looking || !v || !screen || screen.at === scene.of) return looking;
+    const shot = screen;
+    lastLookAt = Date.now();
+    looking = (async () => {
+      const res = await fetch(v.url, {
+        method: 'POST',
+        headers: { Authorization: 'Bearer ' + v.key, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model: v.model, max_tokens: 300, temperature: 0.2, ...v.extra,
+          messages: [
+            { role: 'system', content: EYES },
+            { role: 'user', content: [
+              { type: 'text', text: scene.text ? `Previous look, ${Math.round((shot.at - scene.at) / 1000)} seconds ago: ${scene.text}` : 'This is the first look.' },
+              { type: 'image_url', image_url: { url: 'data:image/jpeg;base64,' + shot.jpeg } },
+            ] },
+          ],
+        }),
+      });
+      if (!res.ok) throw new Error(`vision ${res.status}: ${(await res.text()).slice(0, 160)}`);
+      const said = String((await res.json()).choices?.[0]?.message?.content || '');
+      const text = said.replace(/\s*NOTABLE:.*$/is, '').replace(/\s+/g, ' ').trim();
+      if (!text) return false;
+      const notable = /NOTABLE:\s*yes/i.test(said);
+      scene = { text, at: Date.now(), of: shot.at };
+      log('looked at the screen in', scene.at - lastLookAt, 'ms', notable ? '(notable)' : '');
+      send({ type: 'saw', text });
+      return notable;
+    })().catch((err) => {
+      if (!visionWarned) { visionWarned = true; fail('screen', err); } else log('screen', err?.message || err);
+      return false;
+    }).finally(() => { looking = null; });
+    return looking;
+  }
+
+  /** What is on screen, for a reply that is about to be written. Waits briefly for a look in progress. */
+  async function sceneNow() {
+    const p = lookAtScreen();
+    if (p) await Promise.race([p, new Promise((r) => setTimeout(r, 1500))]);
+    return Date.now() - scene.at < 45_000 ? scene.text : '';
+  }
+
+  /** Every few seconds: glance at the screen, and speak up unprompted if something just happened. */
+  async function glance() {
+    if (!game.on || !game.react || closed || reply || anyoneTalking() || Date.now() - lastLookAt < LOOK_EVERY_MS) return;
+    const notable = await lookAtScreen();
+    if (notable && game.on && game.react && !closed && !reply && !anyoneTalking() && Date.now() - lastSpokeAt > QUIET_AFTER_SPEAKING_MS) respond('', { soft: true });
+  }
+
+  function setGame(m) {
+    const was = game.on;
+    game.on = !!m.on;
+    game.mode = ['name', 'auto', 'always'].includes(m.mode) ? m.mode : 'name';
+    game.react = !!m.react;
+    if (game.on !== was) { interrupt(); resetEars(); overheard = []; if (!game.on) { screen = null; scene = { text: '', at: 0, of: 0 }; ptt?.(false); } }
+    clearInterval(watch);
+    watch = game.on ? setInterval(glance, 3000) : null;
   }
 
   // ---- text to speech -------------------------------------------------------
@@ -224,7 +339,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
           stream: true,
           max_tokens: 260,
           temperature: 0.9,
-          messages: [{ role: 'system', content: persona.prompt }, ...history.slice(-MAX_TURNS)],
+          messages: [{ role: 'system', content: persona.prompt + (game.on ? GAME_MODE : '') }, ...history.slice(-MAX_TURNS)],
           ...llm.extra,
         }),
       });
@@ -253,18 +368,39 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
   }
 
   // ---- one reply ------------------------------------------------------------
-  async function respond(userText, userAudio = null) {
+  /**
+   * @param userText  what was said or typed; empty for an unprompted reaction to the screen
+   * @param audio     the recording of it, when it was spoken into the mic
+   * @param soft      he is allowed to answer [silent], and then nothing is said at all
+   */
+  async function respond(userText, { audio: userAudio = null, soft = false } = {}) {
     interrupt();
     const n = ++turnSeq;
     const r = (reply = { id: ++replySeq, n, ac: new AbortController(), tts: null, text: '', done: false, audio: [], audioBytes: 0, firstAudio: 0, truncated: false, at: '' });
     const live = () => reply === r && !closed;
-    history.push({ role: 'user', content: userText });
-    record.turns.push({
+    let content = userText;
+    if (game.on) {
+      const seen = await sceneNow();
+      if (!live()) { if (userText) overheard.push(userText); return; }
+      content = [
+        overheard.length ? '[Said in voice chat just before this, not to you]\n' + overheard.join('\n') : '',
+        seen ? '[On screen right now] ' + seen : '',
+        userText,
+        !soft ? '' : userText ? SILENT_NOTE : REACT_NOTE,
+      ].filter(Boolean).join('\n\n');
+      overheard = [];
+    }
+    const asked = { role: 'user', content };
+    history.push(asked);
+    if (rec()) record.turns.push({
       n, role: 'user', at: new Date().toISOString(), source: userAudio ? 'voice' : 'text', text: userText,
       audio: saveAudio(`${pad(n)}-user.wav`, userAudio, MIC_RATE), conversationAt: addToConversation(userAudio, MIC_RATE),
     });
-    send({ type: 'user_final', text: userText });
-    send({ type: 'reply_start', id: r.id });
+    // A reply he may decline is only announced once he has actually started saying something.
+    let announced = false;
+    const announce = () => { if (!announced) { announced = true; send({ type: 'reply_start', id: r.id }); } };
+    if (!game.on) send({ type: 'user_final', text: userText });
+    if (!soft) announce();
     const t0 = Date.now();
     r.at = new Date().toISOString();
 
@@ -281,7 +417,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
           if (!r.firstAudio) { r.firstAudio = Date.now() - t0; log('first audio after', r.firstAudio, 'ms'); }
           if (!pcm.length) return;
           client.send(pcm);
-          if (store && r.audioBytes < MAX_REPLY_BYTES) { r.audio.push(pcm); r.audioBytes += pcm.length; }
+          if (rec() && r.audioBytes < MAX_REPLY_BYTES) { r.audio.push(pcm); r.audioBytes += pcm.length; }
         } else if (m.event === 'finish') {
           tts.close();
           if (m.reason === 'error') fail('tts', 'voice engine reported an error');
@@ -305,7 +441,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
       // Hold back a half-written [cue] so it is never split across two sends.
       const open = pending.lastIndexOf('[');
       const cut = !final && open > pending.lastIndexOf(']') && pending.length - open < 40 ? open : pending.length;
-      const out = pending.slice(0, cut);
+      const out = pending.slice(0, cut).replace(/\[\s*silen(?:t|ce)\s*\]/gi, ''); // the stay-quiet marker is never a spoken word
       pending = pending.slice(cut);
       if (!out.trim()) return;
       for (const [, cue] of out.matchAll(/\[([a-z ,']+)\]/gi)) {
@@ -321,12 +457,33 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
       tts.send(encode({ event: 'flush' }));
     };
     const SENTENCE_END = /[.!?…]["')\]]*\s*$/;
+    /** He chose to say nothing: undo the turn as if it had never been put to him. */
+    const stayQuiet = () => {
+      reply = null;
+      r.done = true;
+      r.ac.abort();
+      ttsReady.then((t) => t.close()).catch(() => {});
+      const at = history.lastIndexOf(asked);
+      if (at >= 0) history.splice(at, 1);
+      if (userText) overheard.push(userText);
+      send({ type: 'reply_end', id: r.id });
+    };
+    // On a soft turn nothing is spoken until the opening words show whether it is [silent].
+    let decided = !soft;
+    const decide = (final) => {
+      const rest = pending.replace(/^\s*(\[(?!silent)[a-z ,']+\]\s*)*/i, '');
+      if (/^[\[(*"]*\s*silent/i.test(rest) || (final && !rest.trim())) return stayQuiet();
+      if (!final && rest.length < 10) return;
+      decided = true;
+      announce();
+    };
 
     try {
       const info = { truncated: false };
       for await (const delta of llmStream(r.ac.signal, info)) {
         if (!live()) return;
         pending += delta;
+        if (!decided) { decide(false); if (!live()) return; if (!decided) continue; }
         if (SENTENCE_END.test(pending) || /\n\s*$/.test(pending) || pending.length > 220) await speak(false);
       }
       if (info.truncated) {
@@ -335,6 +492,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
         const whole = pending.match(/^[\s\S]*[.!?…]["')\]]*(?=\s|$)/);
         pending = whole ? whole[0] : '';
       }
+      if (!decided) { decide(true); if (!live()) return; }
       await speak(true);
       if (live()) (await ttsReady).send(encode({ event: 'stop' }));
     } catch (e) {
@@ -346,6 +504,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
 
   function logReply(r, interrupted) {
     if (!r.text.trim() && !r.audio.length) return saveTranscript();
+    if (!rec()) { r.audio = []; return; }
     record.turns.push({
       n: r.n, role: 'assistant', at: r.at, persona: persona.name, voice: voice || persona.voice || null, text: r.text.trim(),
       firstAudioMs: r.firstAudio || null, interrupted, truncated: r.truncated, audio: saveAudio(`${pad(r.n)}-assistant.wav`, r.audio, TTS_SAMPLE_RATE),
@@ -360,6 +519,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
     r.done = true;
     reply = null;
     if (r.text.trim()) history.push({ role: 'assistant', content: r.text.trim() });
+    lastSpokeAt = Date.now();
     logReply(r, false);
     send({ type: 'reply_end', id: r.id });
   }
@@ -379,11 +539,15 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
 
   // ---- browser messages -----------------------------------------------------
   client.onmessage = (data, isBinary) => {
-    if (isBinary) return onMicAudio(data);
+    if (isBinary) {
+      if (data.length % 2 === 0) return onAudio(ears.mic, data);
+      if (data[0] === 1 && game.on) onAudio(ears.team, data.subarray(1));
+      return;
+    }
     let m;
     try { m = JSON.parse(data.toString()); } catch { return; }
     if (m.type === 'config') {
-      if (PERSONAS[m.persona] && PERSONAS[m.persona] !== persona) { persona = PERSONAS[m.persona]; history.length = 0; voice = null; interrupt(); }
+      if (PERSONAS[m.persona] && PERSONAS[m.persona] !== persona) { persona = PERSONAS[m.persona]; history.length = 0; overheard = []; voice = null; interrupt(); resetEars(); }
       if (typeof m.voice === 'string' && /^[a-f0-9]{16,64}$/i.test(m.voice)) {
         const want = m.voice, forPersona = persona;
         voiceAllowed(want, env.FISH_API_KEY).then((ok) => {
@@ -396,14 +560,22 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
       respond(m.text.trim().slice(0, 2000));
     } else if (m.type === 'interrupt') {
       interrupt();
+    } else if (m.type === 'game') {
+      setGame(m);
+    } else if (m.type === 'screen' && game.on && typeof m.jpeg === 'string' && m.jpeg.length <= MAX_SCREEN_CHARS && /^[A-Za-z0-9+/]+=*$/.test(m.jpeg)) {
+      screen = { jpeg: m.jpeg, at: Date.now() };
+    } else if (m.type === 'ptt') {
+      if (game.on || !m.down) ptt?.(!!m.down);
     }
   };
   client.onclose = () => {
     const r = reply;
     if (r) { reply = null; r.ac.abort(); try { r.tts?.close(); } catch {} logReply(r, true); }
     closed = true;
+    clearInterval(watch);
+    ptt?.(false);
     try { convo?.close(); } catch (e) { log('recording failed', e?.message || e); }
-    try { stt?.send(JSON.stringify({ type: 'CloseStream' })); stt?.close(); } catch {}
+    for (const e of Object.values(ears)) { try { e.stt?.send(JSON.stringify({ type: 'CloseStream' })); e.stt?.close(); } catch {} }
     warmTts?.then((t) => t.close()).catch(() => {});
   };
 }
