@@ -36,6 +36,9 @@ function redact(s) {
     .replace(/\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}/g, '[secret]')
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s\/@:]+:[^\s\/@]+@/gi, '$1[credentials]@')
     .replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*)\s*[=:]\s*["']?[^\s"']{6,}["']?/g, '$1=[secret]')
+    .replace(/\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|auth)[a-z_]*)\s*[=:]\s*["']?[^\s"'|)]{6,}["']?/gi, '$1=[secret]')
+    .replace(/\bBasic\s+[A-Za-z0-9+\/=]{8,}/g, 'Basic [secret]')
+    .replace(/(\s-u\s+)["']?[^\s"':]+:[^\s"']+["']?/g, '$1[credentials]')
     .replace(/\bBearer\s+[A-Za-z0-9._\-]{12,}/g, 'Bearer [secret]')
     .replace(/\b(?=[A-Za-z0-9_\-]*[a-z])(?=[A-Za-z0-9_\-]*[A-Z])(?=[A-Za-z0-9_\-]*\d)[A-Za-z0-9_\-]{32,}\b/g, '[redacted]')
     .replace(/\b[a-f0-9]{40,}\b/g, '[redacted]')
@@ -50,6 +53,7 @@ function cleanUserText(s) {
   return s
     .replace(/<system-reminder>[\s\S]*?<\/system-reminder>/g, '')
     .replace(/<local-command-[a-z]+>[\s\S]*?<\/local-command-[a-z]+>/g, '')
+    .replace(/<(bash-stdout|bash-stderr|bash-input)>[\s\S]*?(?:<\/\1>|$)/g, '')
     .replace(/<command-(?:name|message|args)>[\s\S]*?<\/command-(?:name|message|args)>/g, '')
     .replace(/<\/?pasted_content[^>]*>/g, '')
     .trim();
@@ -76,6 +80,8 @@ function build() {
       let o;
       try { o = JSON.parse(line); } catch { continue; }
       if ((o.type !== 'user' && o.type !== 'assistant') || o.isSidechain || o.isMeta) continue;
+      // Compaction summaries can restate tool output, so they are never published.
+      if (o.isCompactSummary || o.isVisibleInTranscriptOnly) continue;
       const t = o.timestamp;
       const content = o.message?.content;
       const blocks = typeof content === 'string' ? [{ type: 'text', text: content }] : content || [];
