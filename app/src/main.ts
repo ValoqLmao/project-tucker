@@ -37,7 +37,7 @@ resize();
 
 let avatar: Avatar | null = null;
 let session: VoiceSession | null = null;
-type Persona = { id: string; name: string; blurb: string; voice?: string };
+type Persona = { id: string; name: string; voice?: string };
 let personas: Persona[] = [];
 const persona = () => personas.find((p) => p.id === personaSel.value) ?? { id: personaSel.value, name: 'Her' };
 const picker = setupVoicePicker({
@@ -48,7 +48,7 @@ const picker = setupVoicePicker({
   onChange: (voice) => session?.configure(personaSel.value, voice),
 });
 $('voiceBtn').onclick = () => picker.open();
-const BASELINE: Record<string, [string, number]> = { sweet: ['warm', 0.45], roast: ['smug', 0.3], mommy: ['soft', 0.6], spicy: ['flirty', 0.4], goblin: ['smug', 0.35] };
+const BASELINE: Record<string, [string, number]> = { mommy: ['soft', 0.6], goblin: ['annoyed', 0.4] };
 const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['soft', 0.3]));
 let token = ''; // proof of the access code, when the server asks for one
 let userTalking = false;
@@ -106,7 +106,7 @@ async function setupModels() {
   let saved: string | null = null;
   try { saved = localStorage.getItem('tucker.model'); } catch {}
   if (saved && [...modelSel.options].some((o) => o.value === saved)) modelSel.value = saved;
-  else if (files.length) modelSel.selectedIndex = 1;
+  else if (files.length) modelSel.value = files.find((f) => /yae/i.test(f)) ?? files[0];
   modelSel.onchange = () => {
     try { localStorage.setItem('tucker.model', modelSel.value); } catch {}
     loadAvatar(urlOf(modelSel.value)).catch(() => {});
@@ -158,7 +158,7 @@ async function loadPersonas() {
   if (!API) return;
   try {
     const list: Persona[] = (personas = await (await fetch(`${API}/personas`)).json());
-    personaSel.replaceChildren(...list.map((p) => new Option(`${p.name} — ${p.blurb}`, p.id)));
+    personaSel.replaceChildren(...list.map((p) => new Option(p.name, p.id)));
     document.body.classList.add('connected');
     applyBaseline();
   } catch {

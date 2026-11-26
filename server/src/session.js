@@ -58,7 +58,7 @@ function emotionFor(cue) {
  * @param env          {DEEPGRAM_API_KEY, FISH_API_KEY, VENICE_API_KEY, VENICE_MODEL?, FISH_MODEL?, LLM_STUB?}
  */
 export function startSession({ client, openUpstream, env, log = () => {} }) {
-  let persona = PERSONAS.sweet;
+  let persona = PERSONAS.mommy;
   let voice = null;
   const history = [];
   let stt = null, sttOpening = null, sttBacklog = [];

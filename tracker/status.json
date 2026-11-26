@@ -1,8 +1,8 @@
 {
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
-  "phase": "Deployment",
-  "focus": "Real panoramic scenes behind her, tougher banter from the roast personas, and everything needed to host it: a Cloudflare Workers version of the session server and an entry screen with an 18+ check and access code.",
+  "phase": "Live",
+  "focus": "Hosted on Cloudflare: the site on Pages, the session server on Workers, characters and motion clips in R2 behind an access code. Trimmed to two personalities.",
   "appUrl": "app/",
   "milestones": [
     {
@@ -35,7 +35,7 @@
     },
     {
       "name": "Hosting for the API side + custom domain",
-      "state": "doing"
+      "state": "done"
     }
   ]
 }
