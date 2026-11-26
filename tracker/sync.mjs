@@ -36,7 +36,7 @@ function redact(s) {
     .replace(/\b(?:gh[pousr]|github_pat)_[A-Za-z0-9_]{20,}/g, '[secret]')
     .replace(/(\b[a-z][a-z0-9+.-]*:\/\/)[^\s\/@:]+:[^\s\/@]+@/gi, '$1[credentials]@')
     .replace(/\b([A-Z][A-Z0-9_]*(?:KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)[A-Z0-9_]*)\s*[=:]\s*["']?[^\s"']{6,}["']?/g, '$1=[secret]')
-    .replace(/\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|auth)[a-z_]*)\s*[=:]\s*["']?[^\s"'|)]{6,}["']?/gi, '$1=[secret]')
+    .replace(/\b((?:pass(?:word|wd)?|secret|token|api[_-]?key|auth)[a-z_]*)\s*[=:]\s*["']?(?:(?:Bearer|Basic|Token)\s+)?[^\s"'|)]{6,}["']?/gi, '$1=[secret]')
     .replace(/\bBasic\s+[A-Za-z0-9+\/=]{8,}/g, 'Basic [secret]')
     .replace(/(\s-u\s+)["']?[^\s"':]+:[^\s"']+["']?/g, '$1[credentials]')
     .replace(/\bBearer\s+[A-Za-z0-9._\-]{12,}/g, 'Bearer [secret]')
