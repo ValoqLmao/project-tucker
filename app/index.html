@@ -5,18 +5,35 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Project Tucker</title>
 <style>
-  html, body { margin: 0; height: 100%; background: #14121b; color: #ebe7f2; font: 14px system-ui, "Segoe UI", sans-serif; overflow: hidden; }
+  html, body { margin: 0; height: 100%; background: #14121b; color: #ebe7f2; font: 15px system-ui, "Segoe UI", sans-serif; overflow: hidden; }
   canvas { display: block; width: 100%; height: 100%; }
-  #hud { position: fixed; left: 0; right: 0; bottom: 0; padding: 10px; display: flex; flex-wrap: wrap; gap: 6px; justify-content: center; background: linear-gradient(transparent, #14121bcc); }
-  button { font: inherit; color: inherit; background: #262231; border: 1px solid #3a3548; border-radius: 99px; padding: 6px 12px; cursor: pointer; }
-  button:hover { border-color: #ff7ab8; }
-  button[aria-pressed="true"] { background: #ff7ab8; color: #14121b; border-color: #ff7ab8; }
-  #note { position: fixed; top: 10px; left: 0; right: 0; text-align: center; color: #9a94a8; font-size: 12px; padding: 0 12px; }
+  #note { position: fixed; top: 10px; left: 0; right: 0; text-align: center; color: #c9c2d6; font-size: 13px; padding: 0 12px; }
+  #ui { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px; display: none; flex-direction: column; align-items: center; gap: 10px; background: linear-gradient(transparent, #14121be6 40%); }
+  body.connected #ui { display: flex; }
+  #captions { width: min(560px, 100%); text-align: center; text-shadow: 0 1px 4px #000; }
+  #you { color: #9a94a8; font-size: 13px; min-height: 1.3em; }
+  #her { font-size: 17px; min-height: 1.4em; max-height: 4.5em; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+  #controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; width: min(560px, 100%); }
+  button, select, input { font: inherit; color: inherit; background: #262231; border: 1px solid #3a3548; border-radius: 99px; padding: 8px 14px; min-width: 0; }
+  button { cursor: pointer; }
+  button:hover, select:hover, input:focus { border-color: #ff7ab8; outline: none; }
+  #talk { background: #ff7ab8; color: #14121b; border-color: #ff7ab8; font-weight: 600; }
+  #talk[aria-pressed="true"] { background: #262231; color: #ff7ab8; }
+  #say { display: flex; gap: 8px; flex: 1 1 260px; }
+  #text { flex: 1; }
+  #persona { flex: 1 1 100%; }
 </style>
 </head>
 <body>
 <div id="note">Loading avatar…</div>
-<div id="hud"></div>
+<div id="ui">
+  <div id="captions" hidden><div id="you"></div><div id="her"></div></div>
+  <div id="controls">
+    <select id="persona" aria-label="Personality"></select>
+    <button id="talk" aria-pressed="false">Start talking</button>
+    <form id="say"><input id="text" placeholder="or type to her…" autocomplete="off" aria-label="Message"><button>Send</button></form>
+  </div>
+</div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

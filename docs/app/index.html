@@ -4,11 +4,18 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Project Tucker</title>
-<style>html,body{color:#ebe7f2;background:#14121b;height:100%;margin:0;font:14px system-ui,Segoe UI,sans-serif;overflow:hidden}canvas{width:100%;height:100%;display:block}#hud{background:linear-gradient(#0000,#14121bcc);flex-wrap:wrap;justify-content:center;gap:6px;padding:10px;display:flex;position:fixed;bottom:0;left:0;right:0}button{font:inherit;color:inherit;cursor:pointer;background:#262231;border:1px solid #3a3548;border-radius:99px;padding:6px 12px}button:hover{border-color:#ff7ab8}button[aria-pressed=true]{color:#14121b;background:#ff7ab8;border-color:#ff7ab8}#note{text-align:center;color:#9a94a8;padding:0 12px;font-size:12px;position:fixed;top:10px;left:0;right:0}</style>
-  <script type="module" crossorigin src="./assets/index-CqVE_S2O.js"></script>
+<style>html,body{color:#ebe7f2;background:#14121b;height:100%;margin:0;font:15px system-ui,Segoe UI,sans-serif;overflow:hidden}canvas{width:100%;height:100%;display:block}#note{text-align:center;color:#c9c2d6;padding:0 12px;font-size:13px;position:fixed;top:10px;left:0;right:0}#ui{background:linear-gradient(#0000,#14121be6 40%);flex-direction:column;align-items:center;gap:10px;padding:12px;display:none;position:fixed;bottom:0;left:0;right:0}body.connected #ui{display:flex}#captions{text-align:center;text-shadow:0 1px 4px #000;width:min(560px,100%)}#you{color:#9a94a8;min-height:1.3em;font-size:13px}#her{flex-direction:column;justify-content:flex-end;min-height:1.4em;max-height:4.5em;font-size:17px;display:flex;overflow:hidden}#controls{flex-wrap:wrap;justify-content:center;gap:8px;width:min(560px,100%);display:flex}button,select,input{font:inherit;color:inherit;background:#262231;border:1px solid #3a3548;border-radius:99px;min-width:0;padding:8px 14px}button{cursor:pointer}button:hover,select:hover,input:focus{border-color:#ff7ab8;outline:none}#talk{color:#14121b;background:#ff7ab8;border-color:#ff7ab8;font-weight:600}#talk[aria-pressed=true]{color:#ff7ab8;background:#262231}#say{flex:260px;gap:8px;display:flex}#text{flex:1}#persona{flex:100%}</style>
+  <script type="module" crossorigin src="./assets/index-Cwb44q_A.js"></script>
 </head>
 <body>
 <div id="note">Loading avatar…</div>
-<div id="hud"></div>
+<div id="ui">
+  <div id="captions" hidden><div id="you"></div><div id="her"></div></div>
+  <div id="controls">
+    <select id="persona" aria-label="Personality"></select>
+    <button id="talk" aria-pressed="false">Start talking</button>
+    <form id="say"><input id="text" placeholder="or type to her…" autocomplete="off" aria-label="Message"><button>Send</button></form>
+  </div>
+</div>
 </body>
 </html>

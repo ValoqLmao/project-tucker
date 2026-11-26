@@ -1,8 +1,14 @@
 import * as THREE from 'three';
 import { Avatar, type Emotion } from './avatar';
+import { VoiceSession, type ServerEvent } from './voice';
 
-const note = document.getElementById('note')!;
-const hud = document.getElementById('hud')!;
+// Where the session server lives. Empty in production builds until a backend is deployed.
+const API = (import.meta.env.VITE_API_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://localhost:8787' : '');
+
+const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
+const note = $('note'), captions = $('captions'), you = $('you'), her = $('her');
+const personaSel = $<HTMLSelectElement>('persona'), talk = $<HTMLButtonElement>('talk');
+const form = $<HTMLFormElement>('say'), input = $<HTMLInputElement>('text');
 
 const renderer = new THREE.WebGLRenderer({ antialias: true, alpha: true });
 renderer.setPixelRatio(Math.min(devicePixelRatio, 2));
@@ -25,18 +31,10 @@ addEventListener('resize', resize);
 resize();
 
 let avatar: Avatar | null = null;
-let analyser: AnalyserNode | null = null;
-let samples: Float32Array<ArrayBuffer> | null = null;
+let session: VoiceSession | null = null;
+let calmDown = 0; // seconds until her face relaxes back to neutral
 
-function button(label: string, onClick: (b: HTMLButtonElement) => void) {
-  const b = document.createElement('button');
-  b.textContent = label;
-  b.onclick = () => onClick(b);
-  hud.append(b);
-  return b;
-}
-
-async function start() {
+async function loadAvatar() {
   try {
     avatar = await Avatar.load(`${import.meta.env.BASE_URL}models/placeholder.vrm`, (f) => {
       note.textContent = `Loading avatar… ${Math.round(f * 100)}%`;
@@ -51,48 +49,81 @@ async function start() {
   camera.position.set(0, head.y - 0.04, head.z + 1.9);
   camera.lookAt(0, head.y - 0.1, head.z);
   avatar.lookTarget.position.copy(camera.position);
-  note.textContent = 'Placeholder model. Voice and chat are not wired up yet.';
-
-  const emotions: Emotion[] = ['neutral', 'happy', 'angry', 'sad', 'relaxed', 'surprised'];
-  const buttons = emotions.map((e) =>
-    button(e, (b) => {
-      avatar!.setEmotion(e);
-      buttons.forEach((x) => x.setAttribute('aria-pressed', String(x === b)));
-    }),
-  );
-  buttons[0].setAttribute('aria-pressed', 'true');
-
-  // Stand-in for the voice until speech is wired up: your own mic drives her mouth.
-  button('lip sync from my mic', async (b) => {
-    if (analyser) return;
-    try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-      const ctx = new AudioContext();
-      analyser = ctx.createAnalyser();
-      analyser.fftSize = 1024;
-      samples = new Float32Array(analyser.fftSize);
-      ctx.createMediaStreamSource(stream).connect(analyser);
-      b.setAttribute('aria-pressed', 'true');
-    } catch {
-      note.textContent = 'Microphone access was blocked, so lip sync has nothing to follow.';
-    }
-  });
+  note.textContent = API ? '' : 'Preview build: the avatar is live, voice chat is not connected on this page yet.';
 }
+
+async function loadPersonas() {
+  if (!API) return;
+  try {
+    const list: { id: string; name: string; blurb: string }[] = await (await fetch(`${API}/personas`)).json();
+    personaSel.replaceChildren(...list.map((p) => new Option(`${p.name} — ${p.blurb}`, p.id)));
+    document.body.classList.add('connected');
+  } catch {
+    note.textContent = 'The session server is not reachable, so she cannot talk right now.';
+  }
+}
+
+function onEvent(e: ServerEvent) {
+  switch (e.type) {
+    case 'user_start': you.textContent = '…'; break;
+    case 'user_partial':
+    case 'user_final': you.textContent = e.text; break;
+    case 'reply_start': her.textContent = ''; break;
+    case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ]+\]\s*/gi, ''); break;
+    case 'emotion': avatar?.setEmotion(e.value as Emotion); calmDown = 6; break;
+    case 'error': note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;
+  }
+  captions.hidden = false;
+}
+
+async function ensureSession(): Promise<VoiceSession> {
+  if (session) return session;
+  const s = new VoiceSession(API.replace(/^http/, 'ws') + '/session');
+  s.onEvent = onEvent;
+  s.onClose = () => { session = null; talk.setAttribute('aria-pressed', 'false'); talk.textContent = 'Start talking'; };
+  await s.connect();
+  s.configure(personaSel.value);
+  note.textContent = '';
+  return (session = s);
+}
+
+talk.onclick = async () => {
+  try {
+    const s = await ensureSession();
+    if (s.micOn) { s.stopMic(); s.interrupt(); }
+    else await s.startMic();
+    talk.setAttribute('aria-pressed', String(s.micOn));
+    talk.textContent = s.micOn ? 'Stop listening' : 'Start talking';
+  } catch (e) {
+    note.textContent = e instanceof DOMException ? 'Microphone access was blocked. Allow it in the address bar, or type instead.' : (e as Error).message;
+  }
+};
+
+form.onsubmit = async (ev) => {
+  ev.preventDefault();
+  const text = input.value.trim();
+  if (!text) return;
+  try {
+    (await ensureSession()).sendText(text);
+    you.textContent = text;
+    input.value = '';
+  } catch (e) {
+    note.textContent = (e as Error).message;
+  }
+};
+
+personaSel.onchange = () => { session?.configure(personaSel.value); her.textContent = ''; you.textContent = ''; };
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (avatar) {
-    if (analyser && samples) {
-      analyser.getFloatTimeDomainData(samples);
-      let sum = 0;
-      for (const s of samples) sum += s * s;
-      const rms = Math.sqrt(sum / samples.length);
-      avatar.setMouth(rms < 0.015 ? 0 : Math.min(1, rms * 9));
-    }
+    avatar.setMouth(session?.level() ?? 0);
+    if (calmDown > 0 && !session?.speaking && (calmDown -= dt) <= 0) avatar.setEmotion('neutral');
     avatar.update(dt, camera);
   }
   renderer.render(scene, camera);
 });
 
-start();
+loadAvatar();
+loadPersonas();
