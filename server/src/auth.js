@@ -30,27 +30,45 @@ export async function checkToken(secret, token) {
   return sameString(sig, await sign(secret, exp));
 }
 
-/** One key per client: the address itself for IPv4, the /64 network for IPv6 (a single user owns the whole /64). */
+/**
+ * One key per client: the address itself for IPv4, the /64 network for IPv6 (a single user owns
+ * the whole /64). The address is expanded first, so "2001:db8::1" and its long form give one key.
+ */
 export function clientKey(ip) {
-  const s = String(ip || 'unknown').toLowerCase();
-  return s.includes(':') ? s.split(':').slice(0, 4).join(':') : s;
+  let s = String(ip || 'unknown').trim().toLowerCase().replace(/^\[|\]$/g, '').replace(/%.*$/, '');
+  if (!s.includes(':')) return s;
+  // IPv4 carried inside IPv6 (::ffff:1.2.3.4) is really an IPv4 client.
+  const v4 = s.match(/(\d{1,3}(?:\.\d{1,3}){3})$/);
+  if (v4) {
+    if (/^(::ffff:|0{0,4}(:0{0,4}){4}:ffff:)/.test(s)) return v4[1];
+    const [p, q, r, t] = v4[1].split('.').map(Number);
+    s = s.slice(0, -v4[1].length) + ((p << 8) | q).toString(16) + ':' + ((r << 8) | t).toString(16);
+  }
+  const [head, tail] = s.split('::');
+  const h = head ? head.split(':') : [], t = tail !== undefined && tail ? tail.split(':') : [];
+  const groups = tail === undefined ? h : [...h, ...Array(Math.max(0, 8 - h.length - t.length)).fill('0'), ...t];
+  if (groups.length !== 8 || groups.some((g) => !/^[0-9a-f]{1,4}$/.test(g))) return 'invalid:' + s.slice(0, 45);
+  return groups.slice(0, 4).map((g) => g.replace(/^0+(?=.)/, '')).join(':');
 }
 
 /**
- * Small in-memory limiter for code guesses: `max` tries per `windowMs` per client. Best effort
- * (memory is per process or isolate), so the access code itself must be long and random.
+ * In-memory limiter for code guesses: `max` tries per `windowMs` per client, plus a ceiling on
+ * guesses from everyone combined, so spreading attempts across many addresses does not help.
+ * Best effort (memory is per process or isolate): the access code itself must be long and random.
  */
-export function makeLimiter(max = 8, windowMs = 10 * 60 * 1000, capacity = 5000) {
-  const seen = new Map();
+export function makeLimiter(max = 8, windowMs = 10 * 60 * 1000, capacity = 5000, globalMax = 300) {
+  const seen = new Map(); // insertion-ordered, oldest first
+  let globalStart = 0, globalCount = 0;
   return (ip) => {
     const key = clientKey(ip), now = Date.now();
+    if (now - globalStart > windowMs) { globalStart = now; globalCount = 0; }
+    if (++globalCount > globalMax) return false;
     const e = seen.get(key);
     if (e && now - e.start <= windowMs) return ++e.n <= max;
-    if (seen.size >= capacity) {
-      // Make room by dropping expired entries only; never forget a client still inside its window.
-      for (const [k, v] of seen) if (now - v.start > windowMs) seen.delete(k);
-      if (seen.size >= capacity) return false; // full of live entries: refuse rather than reset
-    }
+    seen.delete(key);
+    // Full: drop the oldest entry. New clients are never locked out, and the global ceiling
+    // above still bounds what an attacker gains by cycling addresses to push entries out.
+    if (seen.size >= capacity) seen.delete(seen.keys().next().value);
     seen.set(key, { start: now, n: 1 });
     return true;
   };

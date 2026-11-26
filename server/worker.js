@@ -114,7 +114,8 @@ export class Session {
     };
 
     startSession({ client: wrap(server), openUpstream, env: this.env, log: (...a) => console.log(...a) });
-    setTimeout(() => { try { server.close(1000, 'session time limit'); } catch {} }, SESSION_LIMIT_MS);
+    // The slot is freed here too, in case the close event never arrives for a dead connection.
+    setTimeout(() => { try { server.close(1000, 'session time limit'); } catch {} release(); }, SESSION_LIMIT_MS);
     return new Response(null, { status: 101, webSocket: client });
   }
 }
