@@ -302,10 +302,12 @@ export function startSession({ client, openUpstream, env, store = null, ptt = nu
 
   function setGame(m) {
     const was = game.on;
+    // A reply in progress is ended under the mode it began in, so one from game mode is never recorded.
+    if (!!m.on !== was) interrupt();
     game.on = !!m.on;
     game.mode = ['name', 'auto', 'always'].includes(m.mode) ? m.mode : 'name';
     game.react = !!m.react;
-    if (game.on !== was) { interrupt(); resetEars(); overheard = []; if (!game.on) { screen = null; scene = { text: '', at: 0, of: 0 }; ptt?.(false); } }
+    if (game.on !== was) { resetEars(); overheard = []; if (!game.on) { screen = null; scene = { text: '', at: 0, of: 0 }; ptt?.(false); } }
     clearInterval(watch);
     watch = game.on ? setInterval(glance, 3000) : null;
   }
