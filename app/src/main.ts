@@ -126,7 +126,7 @@ async function enter() {
   try { gate = !!(await (await fetch(`${API}/config`)).json()).gate; } catch { return; } // unreachable server: loadPersonas reports it
   token = read('tucker.token');
   if (Number(token.split('.')[0]) * 1000 < Date.now() + 60_000) token = ''; // expired or about to
-  const adult = read('tucker.adult') === 'yes';
+  const adult = read('tucker.consent2') === 'yes';
   if (adult && (!gate || token)) return;
 
   const box = $('gate'), form = $<HTMLFormElement>('gateForm'), code = $<HTMLInputElement>('gateCode'), err = $('gateError'), age = $<HTMLInputElement>('gateAge');
@@ -147,7 +147,7 @@ async function enter() {
           write('tucker.token', token);
         } catch { err.textContent = 'Could not reach the server. Try again.'; return; }
       }
-      write('tucker.adult', 'yes');
+      write('tucker.consent2', 'yes');
       box.hidden = true;
       done();
     };
@@ -172,7 +172,7 @@ function onEvent(e: ServerEvent) {
     case 'user_partial':
     case 'user_final': you.textContent = e.text; userTalking = e.type === 'user_partial'; if (e.type === 'user_final') thinking = true; break;
     case 'reply_start': her.textContent = ''; break;
-    case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ,']+\]\s*|["“”*]/gi, ''); break;
+    case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ,']+\]\s*|["“”*]/gi, ''); her.scrollTop = her.scrollHeight; break;
     case 'emotion': avatar?.setEmotion(e.value, e.strength ?? 0.6); break;
     case 'reply_end': case 'interrupt': thinking = false; break;
     case 'error': thinking = false; note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;

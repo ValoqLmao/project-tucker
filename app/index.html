@@ -11,8 +11,8 @@
   #ui { position: fixed; left: 0; right: 0; bottom: 0; padding: 12px; display: none; flex-direction: column; align-items: center; gap: 10px; background: linear-gradient(transparent, #14121be6 40%); }
   body.connected #ui { display: flex; }
   #captions { width: min(560px, 100%); text-align: center; text-shadow: 0 1px 4px #000; }
-  #you { color: #9a94a8; font-size: 13px; min-height: 1.3em; }
-  #her { font-size: 17px; min-height: 1.4em; max-height: 4.5em; overflow: hidden; display: flex; flex-direction: column; justify-content: flex-end; }
+  #you { color: #9a94a8; font-size: 13px; min-height: 1.3em; max-height: 4.5em; overflow-y: auto; scrollbar-width: thin; }
+  #her { font-size: 17px; min-height: 1.4em; max-height: 34vh; overflow-y: auto; overscroll-behavior: contain; scrollbar-width: thin; }
   #controls { display: flex; flex-wrap: wrap; gap: 8px; justify-content: center; width: min(560px, 100%); }
   button, select, input { font: inherit; color: inherit; background: #262231; border: 1px solid #3a3548; border-radius: 99px; padding: 8px 14px; min-width: 0; }
   button { cursor: pointer; }
@@ -68,7 +68,8 @@
   <form id="gateForm">
     <h2>Before you come in</h2>
     <p>This is a voice companion for adults. Some personalities swear, flirt or get explicit.</p>
-    <label class="check"><input type="checkbox" id="gateAge"> I am 18 or older</label>
+    <p><strong>Conversations here are recorded:</strong> what you say or type, and her replies, are saved as audio and text.</p>
+    <label class="check"><input type="checkbox" id="gateAge"> I am 18 or older and agree to being recorded</label>
     <label id="gateCodeRow">Access code<input id="gateCode" type="password" autocomplete="off"></label>
     <p id="gateError" role="alert"></p>
     <button>Enter</button>

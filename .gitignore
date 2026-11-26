@@ -12,3 +12,4 @@ app/public/local/
 .dev.vars
 .wrangler/
 app/dist/
+recordings/

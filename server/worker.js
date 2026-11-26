@@ -115,7 +115,7 @@ function wrap(ws) {
 }
 
 export class Session {
-  constructor(_state, env) { this.env = env; this.active = 0; }
+  constructor(state, env) { this.state = state; this.env = env; this.active = 0; }
 
   async fetch() {
     if (this.active >= MAX_SESSIONS_PER_CLIENT) return json({ error: 'Too many conversations open from this connection.' }, 429);
@@ -136,7 +136,11 @@ export class Session {
       return wrap(res.webSocket);
     };
 
-    startSession({ client: wrap(server), openUpstream, env: this.env, log: (...a) => console.log(...a) });
+    // Conversations are recorded into the bucket under recordings/, which the /assets route never serves.
+    const store = this.env.ASSETS && this.env.RECORD !== 'off'
+      ? { put: (key, data, type) => { const p = this.env.ASSETS.put(key, data, { httpMetadata: { contentType: type } }); this.state.waitUntil(p); return p; } }
+      : null;
+    startSession({ client: wrap(server), openUpstream, env: this.env, store, log: (...a) => console.log(...a) });
     // The slot is freed here too, in case the close event never arrives for a dead connection.
     setTimeout(() => { try { server.close(1000, 'session time limit'); } catch {} release(); }, SESSION_LIMIT_MS);
     return new Response(null, { status: 101, webSocket: client });

@@ -1,6 +1,9 @@
 // Node host for the session server: local development, or any plain VM/container host.
 //   node --env-file=../.env node.mjs
 import http from 'node:http';
+import fs from 'node:fs/promises';
+import path from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { WebSocketServer, WebSocket } from 'ws';
 import { startSession } from './src/session.js';
 import { personaList } from './src/personas.js';
@@ -15,6 +18,16 @@ const env = process.env;
 const HOST = process.env.HOST || '127.0.0.1';
 const MAX_SESSIONS_PER_IP = 2;
 const sessionsByIp = new Map();
+
+// Conversations are recorded to ../recordings (transcript + audio per session) unless RECORD=off.
+const RECORD_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..');
+const store = env.RECORD === 'off' ? null : {
+  async put(key, data) {
+    const file = path.join(RECORD_DIR, key);
+    await fs.mkdir(path.dirname(file), { recursive: true });
+    await fs.writeFile(file, data);
+  },
+};
 const voiceCache = new Map(); // search term -> { at, body }
 const GATED = !!env.ACCESS_CODE; // optional locally; the Cloudflare deployment requires it
 const allowGuess = makeLimiter();
@@ -92,7 +105,7 @@ server.on('upgrade', async (req, socket, head) => {
   wss.handleUpgrade(req, socket, head, (ws) => {
     sessionsByIp.set(ip, (sessionsByIp.get(ip) || 0) + 1);
     ws.on('close', () => sessionsByIp.set(ip, Math.max(0, (sessionsByIp.get(ip) || 1) - 1)));
-    startSession({ client: wrap(ws), openUpstream, env, log: (...a) => console.log(new Date().toISOString().slice(11, 23), ...a) });
+    startSession({ client: wrap(ws), openUpstream, env, store, log: (...a) => console.log(new Date().toISOString().slice(11, 23), ...a) });
   });
 });
 

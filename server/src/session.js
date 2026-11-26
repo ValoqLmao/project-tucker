@@ -15,10 +15,11 @@ const TTS_URL = 'wss://api.fish.audio/v1/tts/live';
 // Any OpenAI-compatible chat API works. OpenRouter is used when its key is present, otherwise Venice.
 const llmConfig = (env) => env.OPENROUTER_API_KEY
   ? { url: 'https://openrouter.ai/api/v1/chat/completions', key: env.OPENROUTER_API_KEY, model: env.LLM_MODEL || 'thedrummer/unslopnemo-12b',
-      // OpenRouter moves down this list when a model is rate-limited or unavailable.
-      extra: { models: [env.LLM_MODEL || 'thedrummer/unslopnemo-12b', 'thedrummer/cydonia-24b-v4.1', 'sao10k/l3.1-euryale-70b'] } }
+      // Tried in order when the one before is rate-limited or down. (OpenRouter's own `models`
+      // fallback did not catch upstream rate limits on streamed requests, so this is done here.)
+      fallbacks: ['thedrummer/cydonia-24b-v4.1', 'sao10k/l3.1-euryale-70b'], extra: {} }
   : { url: 'https://api.venice.ai/api/v1/chat/completions', key: env.VENICE_API_KEY, model: env.LLM_MODEL || env.VENICE_MODEL || 'venice-uncensored-role-play',
-      extra: { venice_parameters: { include_venice_system_prompt: false, disable_thinking: true, strip_thinking_response: true } } };
+      fallbacks: [], extra: { venice_parameters: { include_venice_system_prompt: false, disable_thinking: true, strip_thinking_response: true } } };
 export const TTS_SAMPLE_RATE = 24000;
 const MAX_TURNS = 40; // messages of history sent to the model
 
@@ -52,12 +53,34 @@ function emotionFor(cue) {
   return hit && { value: hit[1], strength: hit[2] };
 }
 
+/** PCM16 mono chunks -> one WAV file. */
+function wav(chunks, sampleRate) {
+  const size = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(44 + size);
+  const v = new DataView(out.buffer);
+  const tag = (at, s) => { for (let i = 0; i < 4; i++) out[at + i] = s.charCodeAt(i); };
+  tag(0, 'RIFF'); v.setUint32(4, 36 + size, true); tag(8, 'WAVE'); tag(12, 'fmt ');
+  v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
+  v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
+  tag(36, 'data'); v.setUint32(40, size, true);
+  let at = 44;
+  for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
+}
+
+const MIC_RATE = 16000;
+const PREROLL_FRAMES = 15; // ~1.2 s kept from before speech is detected, so the first word is not clipped
+const MAX_TURN_FRAMES = 1125; // ~90 s of microphone audio per turn
+const MAX_REPLY_BYTES = 6 * 1024 * 1024; // ~2 minutes of voice per reply
+
 /**
- * @param client      {send(data), close()} plus assignable onmessage(data, isBinary) / onclose()
+ * @param client       {send(data), close()} plus assignable onmessage(data, isBinary) / onclose()
  * @param openUpstream (url, headers) => Promise<same socket shape>
- * @param env          {DEEPGRAM_API_KEY, FISH_API_KEY, VENICE_API_KEY, VENICE_MODEL?, FISH_MODEL?, LLM_STUB?}
+ * @param env          {DEEPGRAM_API_KEY, FISH_API_KEY, OPENROUTER_API_KEY | VENICE_API_KEY, LLM_MODEL?, FISH_MODEL?, LLM_STUB?}
+ * @param store        optional {put(key, data, contentType)}: where conversations are recorded.
+ *                     Each session gets a folder holding transcript.json plus one WAV per spoken turn.
  */
-export function startSession({ client, openUpstream, env, log = () => {} }) {
+export function startSession({ client, openUpstream, env, store = null, log = () => {} }) {
   let persona = PERSONAS.mommy;
   let voice = null;
   const history = [];
@@ -67,8 +90,28 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
   const send = (o) => { if (!closed) try { client.send(JSON.stringify(o)); } catch {} };
   const fail = (where, e) => { log(where, e?.message || e); send({ type: 'error', where, message: String(e?.message || e).slice(0, 200) }); };
 
+  // ---- recording --------------------------------------------------------------
+  const startedAt = new Date();
+  const sessionId = startedAt.toISOString().replace(/[:.]/g, '-') + '-' + Math.random().toString(36).slice(2, 8);
+  const folder = `recordings/${sessionId.slice(0, 10)}/${sessionId}`;
+  const record = { id: sessionId, startedAt: startedAt.toISOString(), llm: llmConfig(env).model, turns: [] };
+  let turnSeq = 0;
+  const putSafe = (key, data, type) => { try { Promise.resolve(store.put(key, data, type)).catch((e) => log('recording failed', e?.message || e)); } catch (e) { log('recording failed', e?.message || e); } };
+  const saveAudio = (name, chunks, rate) => {
+    if (!store || !chunks?.length) return null;
+    putSafe(`${folder}/${name}`, wav(chunks, rate), 'audio/wav');
+    return name;
+  };
+  const saveTranscript = () => { if (store && record.turns.length) putSafe(`${folder}/transcript.json`, JSON.stringify(record, null, 1), 'application/json'); };
+  const pad = (n) => String(n).padStart(3, '0');
+  let preroll = [], capturing = null;
+
   // ---- speech to text -------------------------------------------------------
   function onMicAudio(frame) {
+    if (store) {
+      if (capturing) { if (capturing.length < MAX_TURN_FRAMES) capturing.push(frame); }
+      else { preroll.push(frame); if (preroll.length > PREROLL_FRAMES) preroll.shift(); }
+    }
     if (stt) return stt.send(frame);
     if (sttBacklog.length < 100) sttBacklog.push(frame);
     sttOpening ??= openUpstream(STT_URL, { Authorization: 'Token ' + env.DEEPGRAM_API_KEY }).then((s) => {
@@ -87,11 +130,14 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
     if (m.event === 'StartOfTurn') {
       interrupt(); // they started talking: stop talking over them
       send({ type: 'user_start' });
+      if (store && !capturing) { capturing = preroll; preroll = []; }
       warmTts ??= openTts(); // connecting takes ~300 ms, so do it while they speak
     } else if (m.event === 'Update' || m.event === 'TurnResumed') {
       send({ type: 'user_partial', text: m.transcript });
-    } else if (m.event === 'EndOfTurn' && m.transcript.trim()) {
-      respond(m.transcript.trim());
+    } else if (m.event === 'EndOfTurn') {
+      const audio = capturing;
+      capturing = null;
+      if (m.transcript.trim()) respond(m.transcript.trim(), audio);
     }
   }
 
@@ -103,7 +149,8 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
   }
 
   // ---- language model -------------------------------------------------------
-  async function* llmStream(signal) {
+  /** Yields text as it arrives. Sets info.truncated if the model ran into its length limit mid-thought. */
+  async function* llmStream(signal, info) {
     if (env.LLM_STUB) {
       for (const w of '[chuckling] This is a canned line, because the language model is switched off. But hey, at least you can hear me.'.split(/(?<= )/)) {
         await new Promise((r) => setTimeout(r, 25));
@@ -112,20 +159,28 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
       return;
     }
     const llm = llmConfig(env);
-    const res = await fetch(llm.url, {
-      method: 'POST',
-      signal,
-      headers: { Authorization: 'Bearer ' + llm.key, 'content-type': 'application/json' },
-      body: JSON.stringify({
-        model: llm.model,
-        stream: true,
-        max_tokens: 140,
-        temperature: 0.9,
-        messages: [{ role: 'system', content: persona.prompt }, ...history.slice(-MAX_TURNS)],
-        ...llm.extra,
-      }),
-    });
-    if (!res.ok) throw new Error(`LLM ${res.status}: ${(await res.text()).slice(0, 160)}`);
+    let res, problem = '';
+    for (const model of [llm.model, ...llm.fallbacks.filter((m) => m !== llm.model)]) {
+      res = await fetch(llm.url, {
+        method: 'POST',
+        signal,
+        headers: { Authorization: 'Bearer ' + llm.key, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          model,
+          stream: true,
+          max_tokens: 260,
+          temperature: 0.9,
+          messages: [{ role: 'system', content: persona.prompt }, ...history.slice(-MAX_TURNS)],
+          ...llm.extra,
+        }),
+      });
+      if (res.ok) break;
+      problem = `LLM ${res.status}: ${(await res.text()).slice(0, 160)}`;
+      log('model unavailable, trying the next one:', model, res.status);
+      // Only a busy or missing model is worth retrying elsewhere; a bad key or no credit is not.
+      if (![404, 408, 429, 500, 502, 503, 504, 529].includes(res.status)) break;
+    }
+    if (!res.ok) throw new Error(problem);
     const dec = new TextDecoder();
     let buf = '';
     for await (const chunk of res.body) {
@@ -135,23 +190,26 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
         const line = buf.slice(0, i).trim();
         buf = buf.slice(i + 1);
         if (!line.startsWith('data:') || line.endsWith('[DONE]')) continue;
-        let delta;
-        try { delta = JSON.parse(line.slice(5)).choices?.[0]?.delta?.content; } catch {}
-        if (delta) yield delta;
+        let choice;
+        try { choice = JSON.parse(line.slice(5)).choices?.[0]; } catch {}
+        if (choice?.finish_reason === 'length') info.truncated = true;
+        if (choice?.delta?.content) yield choice.delta.content;
       }
     }
   }
 
   // ---- one reply ------------------------------------------------------------
-  async function respond(userText) {
+  async function respond(userText, userAudio = null) {
     interrupt();
-    const r = (reply = { id: ++replySeq, ac: new AbortController(), tts: null, text: '', done: false });
+    const n = ++turnSeq;
+    const r = (reply = { id: ++replySeq, n, ac: new AbortController(), tts: null, text: '', done: false, audio: [], audioBytes: 0, firstAudio: 0, truncated: false, at: '' });
     const live = () => reply === r && !closed;
     history.push({ role: 'user', content: userText });
+    record.turns.push({ n, role: 'user', at: new Date().toISOString(), source: userAudio ? 'voice' : 'text', text: userText, audio: saveAudio(`${pad(n)}-user.wav`, userAudio, MIC_RATE) });
     send({ type: 'user_final', text: userText });
     send({ type: 'reply_start', id: r.id });
     const t0 = Date.now();
-    let firstAudio = 0;
+    r.at = new Date().toISOString();
 
     const ttsReady = (warmTts || openTts()).then((tts) => {
       if (!live()) return tts.close();
@@ -163,8 +221,10 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
           let pcm = m.audio;
           if (carry) { const j = new Uint8Array(pcm.length + 1); j[0] = carry[0]; j.set(pcm, 1); pcm = j; carry = null; }
           if (pcm.length % 2) { carry = pcm.slice(-1); pcm = pcm.subarray(0, pcm.length - 1); }
-          if (!firstAudio) { firstAudio = Date.now() - t0; log('first audio after', firstAudio, 'ms'); }
-          if (pcm.length) client.send(pcm);
+          if (!r.firstAudio) { r.firstAudio = Date.now() - t0; log('first audio after', r.firstAudio, 'ms'); }
+          if (!pcm.length) return;
+          client.send(pcm);
+          if (store && r.audioBytes < MAX_REPLY_BYTES) { r.audio.push(pcm); r.audioBytes += pcm.length; }
         } else if (m.event === 'finish') {
           tts.close();
           if (m.reason === 'error') fail('tts', 'voice engine reported an error');
@@ -180,7 +240,9 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
     });
     warmTts = null;
 
-    // Text goes to the voice engine sentence by sentence, so it can start speaking early.
+    // Text is released a whole sentence at a time, to the voice engine and to the captions together.
+    // That lets her start speaking early, and means a reply that hits the model's length limit can
+    // be ended at its last complete sentence instead of trailing off mid-word.
     let pending = '';
     const speak = async (final) => {
       // Hold back a half-written [cue] so it is never split across two sends.
@@ -188,25 +250,33 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
       const cut = !final && open > pending.lastIndexOf(']') && pending.length - open < 40 ? open : pending.length;
       const out = pending.slice(0, cut);
       pending = pending.slice(cut);
-      if (!out) return;
+      if (!out.trim()) return;
       for (const [, cue] of out.matchAll(/\[([a-z ,']+)\]/gi)) {
         const emotion = emotionFor(cue);
         if (emotion) send({ type: 'emotion', ...emotion });
       }
       const tts = await ttsReady;
       if (!live()) return;
+      r.text += out;
+      send({ type: 'reply_text', id: r.id, delta: out });
       // Models like to wrap spoken lines in quotes or asterisks; the voice engine should not see them.
       tts.send(encode({ event: 'text', text: out.replace(/["“”*]/g, '') }));
-      if (/[.!?…]["')\]]?\s*$/.test(out)) tts.send(encode({ event: 'flush' }));
+      tts.send(encode({ event: 'flush' }));
     };
+    const SENTENCE_END = /[.!?…]["')\]]*\s*$/;
 
     try {
-      for await (const delta of llmStream(r.ac.signal)) {
+      const info = { truncated: false };
+      for await (const delta of llmStream(r.ac.signal, info)) {
         if (!live()) return;
-        r.text += delta;
         pending += delta;
-        send({ type: 'reply_text', id: r.id, delta });
-        if (/[.!?…,;:\n]\s*$/.test(pending) || pending.length > 80) await speak(false);
+        if (SENTENCE_END.test(pending) || /\n\s*$/.test(pending) || pending.length > 220) await speak(false);
+      }
+      if (info.truncated) {
+        // Out of room mid-sentence: keep only what ends cleanly.
+        r.truncated = true;
+        const whole = pending.match(/^[\s\S]*[.!?…]["')\]]*(?=\s|$)/);
+        pending = whole ? whole[0] : '';
       }
       await speak(true);
       if (live()) (await ttsReady).send(encode({ event: 'stop' }));
@@ -217,11 +287,22 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
     }
   }
 
+  function logReply(r, interrupted) {
+    if (!r.text.trim() && !r.audio.length) return saveTranscript();
+    record.turns.push({
+      n: r.n, role: 'assistant', at: r.at, persona: persona.name, voice: voice || persona.voice || null, text: r.text.trim(),
+      firstAudioMs: r.firstAudio || null, interrupted, truncated: r.truncated, audio: saveAudio(`${pad(r.n)}-assistant.wav`, r.audio, TTS_SAMPLE_RATE),
+    });
+    r.audio = [];
+    saveTranscript();
+  }
+
   function finish(r) {
     if (reply !== r || r.done) return;
     r.done = true;
     reply = null;
     if (r.text.trim()) history.push({ role: 'assistant', content: r.text.trim() });
+    logReply(r, false);
     send({ type: 'reply_end', id: r.id });
   }
 
@@ -234,6 +315,7 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
     try { r.tts?.close(); } catch {}
     // The model should know it was cut off, roughly where.
     if (r.text.trim()) history.push({ role: 'assistant', content: r.text.trim() + ' [cut off by the user]' });
+    logReply(r, true);
     send({ type: 'interrupt', id: r.id });
   }
 
@@ -259,9 +341,9 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
     }
   };
   client.onclose = () => {
+    const r = reply;
+    if (r) { reply = null; r.ac.abort(); try { r.tts?.close(); } catch {} logReply(r, true); }
     closed = true;
-    reply?.ac.abort();
-    try { reply?.tts?.close(); } catch {}
     try { stt?.send(JSON.stringify({ type: 'CloseStream' })); stt?.close(); } catch {}
     warmTts?.then((t) => t.close()).catch(() => {});
   };
