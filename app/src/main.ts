@@ -69,7 +69,7 @@ function onEvent(e: ServerEvent) {
     case 'user_partial':
     case 'user_final': you.textContent = e.text; break;
     case 'reply_start': her.textContent = ''; break;
-    case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ]+\]\s*/gi, ''); break;
+    case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ,']+\]\s*|["“”*]/gi, ''); break;
     case 'emotion': avatar?.setEmotion(e.value as Emotion); calmDown = 6; break;
     case 'error': note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;
   }

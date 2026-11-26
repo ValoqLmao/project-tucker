@@ -13,7 +13,9 @@ const STT_URL =
 const TTS_URL = 'wss://api.fish.audio/v1/tts/live';
 // Any OpenAI-compatible chat API works. OpenRouter is used when its key is present, otherwise Venice.
 const llmConfig = (env) => env.OPENROUTER_API_KEY
-  ? { url: 'https://openrouter.ai/api/v1/chat/completions', key: env.OPENROUTER_API_KEY, model: env.LLM_MODEL || 'thedrummer/cydonia-24b-v4.1', extra: {} }
+  ? { url: 'https://openrouter.ai/api/v1/chat/completions', key: env.OPENROUTER_API_KEY, model: env.LLM_MODEL || 'thedrummer/unslopnemo-12b',
+      // OpenRouter moves down this list when a model is rate-limited or unavailable.
+      extra: { models: [env.LLM_MODEL || 'thedrummer/unslopnemo-12b', 'thedrummer/cydonia-24b-v4.1', 'sao10k/l3.1-euryale-70b'] } }
   : { url: 'https://api.venice.ai/api/v1/chat/completions', key: env.VENICE_API_KEY, model: env.LLM_MODEL || env.VENICE_MODEL || 'venice-uncensored-role-play',
       extra: { venice_parameters: { include_venice_system_prompt: false, disable_thinking: true, strip_thinking_response: true } } };
 export const TTS_SAMPLE_RATE = 24000;
@@ -28,8 +30,21 @@ const CUE_EMOTION = {
   whispering: 'relaxed', 'soft tone': 'relaxed', calm: 'relaxed', relaxed: 'relaxed',
 };
 
+// Models also invent their own cues ([smiling], [winking]), so fall back to keywords.
+const CUE_KEYWORDS = [
+  [/laugh|chuckl|giggl|smil|grin|cheer|excit|happy|delight|playful|teas|wink|proud|bright/, 'happy'],
+  [/sad|sob|cry|sigh|disappoint|worr|lonely|pout/, 'sad'],
+  [/angr|shout|scream|frustrat|sarcas|disdain|annoy|scoff|growl|mock|deadpan/, 'angry'],
+  [/surpris|gasp|shock|confus/, 'surprised'],
+  [/whisper|soft|calm|relax|gentl|warm|purr|breath|sultry|husky/, 'relaxed'],
+];
+function emotionFor(cue) {
+  const c = cue.toLowerCase();
+  return CUE_EMOTION[c] || CUE_KEYWORDS.find(([re]) => re.test(c))?.[1];
+}
+
 /**
- * @param client       {send(data), close()} plus assignable onmessage(data, isBinary) / onclose()
+ * @param client      {send(data), close()} plus assignable onmessage(data, isBinary) / onclose()
  * @param openUpstream (url, headers) => Promise<same socket shape>
  * @param env          {DEEPGRAM_API_KEY, FISH_API_KEY, VENICE_API_KEY, VENICE_MODEL?, FISH_MODEL?, LLM_STUB?}
  */
@@ -165,13 +180,14 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
       const out = pending.slice(0, cut);
       pending = pending.slice(cut);
       if (!out) return;
-      for (const [, cue] of out.matchAll(/\[([a-z ]+)\]/gi)) {
-        const emotion = CUE_EMOTION[cue.toLowerCase()];
+      for (const [, cue] of out.matchAll(/\[([a-z ,']+)\]/gi)) {
+        const emotion = emotionFor(cue);
         if (emotion) send({ type: 'emotion', value: emotion });
       }
       const tts = await ttsReady;
       if (!live()) return;
-      tts.send(encode({ event: 'text', text: out }));
+      // Models like to wrap spoken lines in quotes or asterisks; the voice engine should not see them.
+      tts.send(encode({ event: 'text', text: out.replace(/["“”*]/g, '') }));
       if (/[.!?…]["')\]]?\s*$/.test(out)) tts.send(encode({ event: 'flush' }));
     };
 

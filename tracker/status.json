@@ -2,7 +2,7 @@
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
   "phase": "Talk loop",
-  "focus": "The full loop works locally: mic or typed input, turn detection, streamed reply, Fish Audio voice, lip movement, emotion-driven expressions, interruptions. Waiting on LLM credit to switch from a stand-in line to real replies; then deploy the server so this page can talk too.",
+  "focus": "Real replies are flowing: speech in, LLM via OpenRouter, Fish Audio voice out, about 1.2 s from end of speech to first audio. Next: mic testing in the browser, the voice picker, and deploying the server so this page can talk too.",
   "appUrl": "app/",
   "milestones": [
     {
