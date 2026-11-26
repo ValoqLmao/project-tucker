@@ -2,7 +2,7 @@
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
   "phase": "Making her feel alive",
-  "focus": "She now moves with motion-captured idle and talking animations, with live eye movement, blinking, mood and voice-driven head motion layered on top. Looking for a better character model next.",
+  "focus": "Calming her down: only subtle idle motion, head turned to the viewer, mild expressions by default with strong ones reserved for strong moments. Researching what makes companion animation believable, and lining up a better character model.",
   "appUrl": "app/",
   "milestones": [
     {

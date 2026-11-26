@@ -8,7 +8,7 @@ export type ServerEvent =
   | { type: 'user_partial' | 'user_final'; text: string }
   | { type: 'reply_start' | 'reply_end' | 'interrupt'; id: number }
   | { type: 'reply_text'; id: number; delta: string }
-  | { type: 'emotion'; value: string }
+  | { type: 'emotion'; value: string; strength?: number }
   | { type: 'error'; where: string; message: string };
 
 const VOICE_RATE = 24000; // what the server sends

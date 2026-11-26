@@ -33,7 +33,7 @@ export function setupVoicePicker(opts: {
   const title = el('h2');
   const form = el('form', 'vsearch');
   const search = el('input');
-  search.placeholder = 'Search community voices: asmr, sultry, british…';
+  search.placeholder = 'Search voices (asmr, sultry, british…) or paste a voice ID';
   search.setAttribute('aria-label', 'Search voices');
   form.append(search, el('button', '', 'Search'));
   const hint = el('p', 'vhint');
@@ -113,7 +113,17 @@ export function setupVoicePicker(opts: {
     }));
   }
 
-  form.onsubmit = (e) => { e.preventDefault(); load(search.value.trim()); };
+  form.onsubmit = (e) => {
+    e.preventDefault();
+    const term = search.value.trim();
+    // A Fish Audio voice ID can be pasted directly; the server checks it before using it.
+    if (/^[a-f0-9]{32}$/i.test(term)) {
+      choose(term.toLowerCase());
+      hint.textContent = `Voice ${term.slice(0, 8)}… set for ${opts.persona().name}. If it is not allowed here, she keeps her current voice.`;
+      return;
+    }
+    load(term);
+  };
 
   return {
     choices,

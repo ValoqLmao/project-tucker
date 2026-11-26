@@ -22,6 +22,8 @@ loader.register((parser) => new VRMAnimationLoaderPlugin(parser));
 
 const _e = new THREE.Euler();
 const _q = new THREE.Quaternion();
+const _q1 = new THREE.Quaternion(), _q2 = new THREE.Quaternion(), _q3 = new THREE.Quaternion();
+const _v1 = new THREE.Vector3(), _v2 = new THREE.Vector3(), _v3 = new THREE.Vector3();
 
 /**
  * A VRM character that keeps itself alive.
@@ -134,7 +136,7 @@ export class Avatar {
   setBaseline(emotion: Emotion, weight: number) { this.baseline = { emotion, weight }; }
 
   /** Flash an emotion; it fades back to the baseline `hold` seconds after she stops speaking. */
-  setEmotion(e: Emotion, intensity = 0.85, hold = 4) {
+  setEmotion(e: Emotion, intensity = 0.4, hold = 3) {
     this.emotion = e;
     this.intensity = e === 'neutral' ? 0 : intensity;
     this.emotionHold = hold;
@@ -186,7 +188,7 @@ export class Avatar {
     const breath = Math.sin(t * 1.5);
     this.nod = Math.max(0, this.nod - dt);
     const nodding = this.nod > 0 ? Math.sin((0.5 - this.nod) * Math.PI * 4) * 0.08 : 0;
-    const emphasis = en * 0.07 * Math.sin(t * 7.3) + en * 0.05;
+    const emphasis = en * 0.03 * Math.sin(t * 6.1) + en * 0.035; // slight dip and bob on stressed syllables
 
     if (!clips) {
       const sway = wander(t * 0.35, 1), shift = wander(t * 0.22, 2);
@@ -198,28 +200,31 @@ export class Avatar {
     } else {
       add('spine', li * 0.05 + sp * 0.015, 0, 0);
     }
-    add('chest', breath * 0.012 + en * 0.02, wander(t * 0.5, 3) * 0.025 * (1 + sp), 0);
-    add('neck', li * 0.04 + nodding * 0.4, wander(t * 0.4, 4) * 0.05 * (1 + sp * 0.8), li * 0.05);
+    add('chest', breath * 0.012 + en * 0.012, wander(t * 0.5, 3) * 0.015, 0);
+    if (clips) this.faceViewer(camera, 0.75); // clips turn her head wherever they like; she should be talking to you
+    add('neck', li * 0.03 + nodding * 0.4, wander(t * 0.4, 4) * 0.03, li * 0.03);
     add(
       'head',
-      wander(t * 0.6, 5) * 0.03 + nodding + sp * emphasis - li * 0.03,
-      wander(t * 0.45, 6) * 0.06 * (1 + sp * 0.9),
-      wander(t * 0.3, 7) * 0.035 + li * 0.09 + sp * wander(t * 1.1, 8) * 0.05,
+      wander(t * 0.6, 5) * 0.02 + nodding + sp * emphasis - li * 0.02,
+      wander(t * 0.45, 6) * 0.035 * (1 + sp * 0.5),
+      wander(t * 0.3, 7) * 0.02 + li * 0.06 + sp * wander(t * 1.1, 8) * 0.025,
     );
+    if (clips && !this.fingersAnimated) this.relaxFingers(set, 0, 0);
 
     // --- eyes ---------------------------------------------------------------
     // Hold the viewer's gaze most of the time, glance away now and then, and never sit perfectly
     // still: real eyes make small jumps every fraction of a second.
     this.glanceIn -= dt;
     if (this.glanceIn <= 0) {
-      const away = Math.random() < (this.activity === 'listening' ? 0.12 : 0.35);
-      this.glance.set(away ? (Math.random() - 0.5) * 0.9 : 0, away ? (Math.random() - 0.3) * 0.4 : 0, 0);
-      this.glanceIn = away ? 0.4 + Math.random() * 0.9 : 1.5 + Math.random() * 3.5;
+      // Mostly eye contact: rare, short looks away, a little more often while she is the one talking.
+      const away = Math.random() < (this.activity === 'speaking' ? 0.3 : 0.12);
+      this.glance.set(away ? (Math.random() - 0.5) * 0.5 : 0, away ? (Math.random() - 0.4) * 0.25 : 0, 0);
+      this.glanceIn = away ? 0.5 + Math.random() * 0.8 : 2.5 + Math.random() * 4;
       if (away && Math.random() < 0.5) this.blinkIn = Math.min(this.blinkIn, 0.05); // people often blink as they shift gaze
     }
     this.saccadeIn -= dt;
     if (this.saccadeIn <= 0) {
-      this.saccade.set((Math.random() - 0.5) * 0.14, (Math.random() - 0.5) * 0.08, 0);
+      this.saccade.set((Math.random() - 0.5) * 0.09, (Math.random() - 0.5) * 0.05, 0);
       this.saccadeIn = 0.25 + Math.random() * 1.1;
     }
     const want = camera.getWorldPosition(new THREE.Vector3()).add(this.glance).add(this.saccade);
@@ -234,7 +239,7 @@ export class Avatar {
     for (const e of EMOTIONS) {
       let target = this.emotion === e ? this.intensity : 0;
       if (this.baseline.emotion === e) target = Math.max(target, this.baseline.weight * (this.intensity > 0.3 && this.emotion !== e ? 0.2 : 1));
-      if (e === 'happy') target = Math.max(target, li * 0.18); // attentive half-smile while listening
+      if (e === 'happy') target = Math.max(target, li * 0.08); // hint of an attentive smile while listening
       // Moods breathe a little instead of holding a frozen mask.
       target *= 1 + wander(t * 0.9, 20 + EMOTIONS.indexOf(e)) * 0.12;
       const w = (this.weights[e] = damp(this.weights[e] ?? 0, Math.max(0, target), 5, dt));
@@ -268,14 +273,46 @@ export class Avatar {
     this.vrm.update(dt);
   }
 
+  private get fingersAnimated() { return [...this.animated].some((n) => /Index/i.test(n)); }
+
+  /** Turn the head most of the way toward the viewer, whatever the body clip is doing. */
+  private faceViewer(camera: THREE.Camera, amount: number) {
+    const head = this.vrm.humanoid.getNormalizedBoneNode('head');
+    if (!head?.parent) return;
+    head.parent.updateWorldMatrix(true, false);
+    head.updateWorldMatrix(false, false);
+    const world = head.getWorldQuaternion(_q1);
+    // VRM 0.x rigs face -Z in their own space (the whole scene is turned around on load).
+    const forward = _v1.set(0, 0, this.vrm.meta?.metaVersion === '0' ? -1 : 1).applyQuaternion(world);
+    const toViewer = camera.getWorldPosition(_v2).sub(head.getWorldPosition(_v3)).normalize();
+    const turn = _q2.setFromUnitVectors(forward, toViewer);
+    const target = _q3.identity().slerp(turn, amount).multiply(world);
+    head.quaternion.copy(head.parent.getWorldQuaternion(_q2).invert().multiply(target));
+  }
+
+  private relaxFingers(set: (n: VRMHumanBoneName, x: number, y: number, z: number) => void, openLeft: number, openRight: number) {
+    const t = this.t;
+    for (const side of ['left', 'right'] as const) {
+      const s = side === 'left' ? -1 : 1;
+      const open = side === 'left' ? openLeft : openRight;
+      FINGERS.forEach((f, i) => {
+        const curl = 0.22 + i * 0.05 - open + wander(t * 0.3, 11 + i) * 0.03;
+        set(`${side}${f}Proximal` as VRMHumanBoneName, 0, 0, s * curl);
+        set(`${side}${f}Intermediate` as VRMHumanBoneName, 0, 0, s * curl * 1.2);
+        set(`${side}${f}Distal` as VRMHumanBoneName, 0, 0, s * curl * 0.8);
+      });
+      set(`${side}ThumbMetacarpal` as VRMHumanBoneName, 0, s * -0.25, 0);
+    }
+  }
+
   /** Arms and hands when no animation clips are available. */
   private proceduralArms(dt: number, set: (n: VRMHumanBoneName, x: number, y: number, z: number) => void, breath: number, en: number) {
     const t = this.t;
     this.gestureIn -= dt;
     if (this.gestureIn <= 0) {
-      const raise = this.activity === 'speaking' && Math.random() < 0.7;
+      const raise = this.activity === 'speaking' && Math.random() < 0.35;
       if (raise && this.gesture < 0.1) this.gestureSide = Math.random() < 0.5 ? 1 : -1;
-      this.gestureTarget = raise ? 0.6 + Math.random() * 0.4 : 0;
+      this.gestureTarget = raise ? 0.25 + Math.random() * 0.25 : 0;
       this.gestureIn = raise ? 1.2 + Math.random() * 2 : 0.6 + Math.random() * 1.5;
     }
     if (this.activity !== 'speaking') this.gestureTarget = 0;
@@ -289,16 +326,6 @@ export class Avatar {
     set('rightLowerArm', 0, 0.22 + gr * (1.5 + beat), 0.06);
     set('leftHand', gl * 0.3, 0, -0.08 + gl * (0.25 + beat * 0.5));
     set('rightHand', gr * 0.3, 0, 0.08 - gr * (0.25 + beat * 0.5));
-    for (const side of ['left', 'right'] as const) {
-      const s = side === 'left' ? -1 : 1;
-      const open = (side === 'left' ? gl : gr) * 0.12;
-      FINGERS.forEach((f, i) => {
-        const curl = 0.22 + i * 0.05 - open + wander(t * 0.3, 11 + i) * 0.03;
-        set(`${side}${f}Proximal` as VRMHumanBoneName, 0, 0, s * curl);
-        set(`${side}${f}Intermediate` as VRMHumanBoneName, 0, 0, s * curl * 1.2);
-        set(`${side}${f}Distal` as VRMHumanBoneName, 0, 0, s * curl * 0.8);
-      });
-      set(`${side}ThumbMetacarpal` as VRMHumanBoneName, 0, s * -0.25, 0);
-    }
+    this.relaxFingers(set, gl * 0.12, gr * 0.12);
   }
 }

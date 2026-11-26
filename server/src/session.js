@@ -33,15 +33,20 @@ const CUE_EMOTION = {
 
 // Models also invent their own cues ([smiling], [winking]), so fall back to keywords.
 const CUE_KEYWORDS = [
-  [/laugh|chuckl|giggl|smil|grin|cheer|excit|happy|delight|playful|teas|wink|proud|bright/, 'happy'],
-  [/sad|sob|cry|sigh|disappoint|worr|lonely|pout/, 'sad'],
-  [/angr|shout|scream|frustrat|sarcas|disdain|annoy|scoff|growl|mock|deadpan/, 'angry'],
-  [/surpris|gasp|shock|confus/, 'surprised'],
+  [/laugh|chuckl|giggl|smil|grin|cheer|excit|happy|delight|playful|teas|wink|proud|bright|amus/, 'happy'],
+  [/sad|sob|cry|sigh|disappoint|worr|lonely|pout|tired/, 'sad'],
+  [/angr|shout|scream|frustrat|sarcas|disdain|annoy|scoff|growl|mock|irritat|grump|grumbl|snark|bitter/, 'angry'],
+  [/surpris|gasp|shock|confus|curious/, 'surprised'],
   [/whisper|soft|calm|relax|gentl|warm|purr|breath|sultry|husky/, 'relaxed'],
+  [/dry|deadpan|flat|neutral|matter/, 'neutral'],
 ];
+// How much of the face a cue should take over. Most cues are only a tint.
+const STRONG = /laugh|giggl|shout|scream|gasp|sob|cry|shock|furious|excit/;
+const FAINT = /calm|soft|dry|deadpan|flat|curious|teas|warm|gentl|neutral/;
 function emotionFor(cue) {
   const c = cue.toLowerCase();
-  return CUE_EMOTION[c] || CUE_KEYWORDS.find(([re]) => re.test(c))?.[1];
+  const value = CUE_EMOTION[c] || CUE_KEYWORDS.find(([re]) => re.test(c))?.[1];
+  return value && { value, strength: STRONG.test(c) ? 0.65 : FAINT.test(c) ? 0.22 : 0.4 };
 }
 
 /**
@@ -183,7 +188,7 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
       if (!out) return;
       for (const [, cue] of out.matchAll(/\[([a-z ,']+)\]/gi)) {
         const emotion = emotionFor(cue);
-        if (emotion) send({ type: 'emotion', value: emotion });
+        if (emotion) send({ type: 'emotion', ...emotion });
       }
       const tts = await ttsReady;
       if (!live()) return;

@@ -43,14 +43,18 @@ const picker = setupVoicePicker({
   onChange: (voice) => session?.configure(personaSel.value, voice),
 });
 $('voiceBtn').onclick = () => picker.open();
-const BASELINE: Record<string, [Emotion, number]> = { sweet: ['happy', 0.16], roast: ['angry', 0.14], mommy: ['relaxed', 0.22], spicy: ['relaxed', 0.18] };
+const BASELINE: Record<string, [Emotion, number]> = { sweet: ['happy', 0.07], roast: ['angry', 0.08], mommy: ['relaxed', 0.12], spicy: ['relaxed', 0.1], goblin: ['angry', 0.06] };
 const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['relaxed', 0.25]));
 let userTalking = false;
 const focus = new THREE.Vector3(0, 1.4, 0); // smoothed head position the camera frames
 
 async function loadAvatar() {
   try {
-    avatar = await Avatar.load(`${import.meta.env.BASE_URL}models/placeholder.vrm`, (f) => {
+    // A model dropped into public/local/models/avatar.vrm (this machine only) replaces the placeholder.
+    const own = `${import.meta.env.BASE_URL}local/models/avatar.vrm`;
+    const head = await fetch(own, { method: 'HEAD' }).catch(() => null);
+    const hasOwn = !!head?.ok && !(head.headers.get('content-type') || '').includes('text/html');
+    avatar = await Avatar.load(hasOwn ? own : `${import.meta.env.BASE_URL}models/placeholder.vrm`, (f) => {
       note.textContent = `Loading avatar… ${Math.round(f * 100)}%`;
     });
   } catch (e) {
@@ -67,8 +71,9 @@ async function loadAvatar() {
   applyBaseline();
   // Motion clips. The richer set lives in public/local (not published); the bundled loop is the fallback.
   const base = import.meta.env.BASE_URL;
-  const local = ['idle', 'idle_2', 'idle_3', 'idle_4', 'idle_5'].map((n) => `${base}local/animations/${n}.vrma`);
-  avatar.loadAnimations(local, `${base}local/animations/talking.vrma`).then((n) => n || avatar!.loadAnimations([`${base}animations/idle_loop.vrma`]));
+  // Only the calm loops: the livelier ones swing the arms and turn the head far more than a person in conversation does.
+  const local = ['idle_5', 'idle'].map((n) => `${base}local/animations/${n}.vrma`);
+  avatar.loadAnimations(local).then((n) => n || avatar!.loadAnimations([`${base}animations/idle_loop.vrma`]));
   note.textContent = API ? '' : 'Preview build: the avatar is live, voice chat is not connected on this page yet.';
 }
 
@@ -91,7 +96,7 @@ function onEvent(e: ServerEvent) {
     case 'user_final': you.textContent = e.text; userTalking = e.type === 'user_partial'; break;
     case 'reply_start': her.textContent = ''; break;
     case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ,']+\]\s*|["“”*]/gi, ''); break;
-    case 'emotion': avatar?.setEmotion(e.value as Emotion); break;
+    case 'emotion': avatar?.setEmotion(e.value as Emotion, e.strength ?? 0.4); break;
     case 'error': note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;
   }
   captions.hidden = false;
