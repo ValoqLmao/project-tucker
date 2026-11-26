@@ -1,5 +1,8 @@
 // Browser side of a voice session: mic up, voice down, over one WebSocket to the session server.
 
+import { createWLipSyncNode, parseBinaryProfile, type WLipSyncAudioNode } from 'wlipsync';
+import type { Visemes } from './avatar';
+
 export type ServerEvent =
   | { type: 'user_start' }
   | { type: 'user_partial' | 'user_final'; text: string }
@@ -41,6 +44,7 @@ export class VoiceSession {
   private samples = new Float32Array(1024);
   private playing = new Set<AudioBufferSourceNode>();
   private nextAt = 0;
+  private lip: WLipSyncAudioNode | null = null;
   private micCtx: AudioContext | null = null;
   private micStream: MediaStream | null = null;
 
@@ -49,7 +53,16 @@ export class VoiceSession {
     this.analyser.connect(this.out.destination);
   }
 
+  /** Vowel-shape analysis of the outgoing voice. Optional: without it the mouth falls back to loudness. */
+  private async initLipSync() {
+    const bin = await (await fetch(`${import.meta.env.BASE_URL}lipsync/profile.bin`)).arrayBuffer();
+    const node = await createWLipSyncNode(this.out, parseBinaryProfile(bin));
+    this.analyser.connect(node);
+    this.lip = node;
+  }
+
   connect(): Promise<void> {
+    this.initLipSync().catch((e) => console.warn('lip sync unavailable, using loudness only', e));
     return new Promise((resolve, reject) => {
       const ws = (this.ws = new WebSocket(this.url));
       ws.binaryType = 'arraybuffer';
@@ -104,6 +117,16 @@ export class VoiceSession {
     for (const s of this.samples) sum += s * s;
     const rms = Math.sqrt(sum / this.samples.length);
     return rms < 0.01 ? 0 : Math.min(1, rms * 7);
+  }
+
+  /** Mouth shapes for the sound playing right now. */
+  visemes(): Visemes {
+    if (!this.playing.size) return { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
+    const lip = this.lip;
+    if (!lip) return { aa: this.level(), ih: 0, ou: 0, ee: 0, oh: 0 };
+    const w = lip.weights, g = Math.min(1, lip.volume * 1.5);
+    // 'S' (sibilants) has no vowel shape of its own: show it as nearly closed teeth.
+    return { aa: (w.A ?? 0) * g, ih: ((w.I ?? 0) + (w.S ?? 0) * 0.5) * g, ou: (w.U ?? 0) * g, ee: (w.E ?? 0) * g, oh: (w.O ?? 0) * g };
   }
 
   get speaking() { return this.playing.size > 0; }

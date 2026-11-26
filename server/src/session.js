@@ -111,7 +111,7 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
       body: JSON.stringify({
         model: llm.model,
         stream: true,
-        max_tokens: 220,
+        max_tokens: 140,
         temperature: 0.9,
         messages: [{ role: 'system', content: persona.prompt }, ...history.slice(-MAX_TURNS)],
         ...llm.extra,

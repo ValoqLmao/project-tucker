@@ -1,8 +1,8 @@
 {
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
-  "phase": "Talk loop",
-  "focus": "Voice picker added: each persona has a default original voice from Fish Audio, and you can search the community library, preview and switch voices. Next: mic and interruption tuning, then deploying the server so this page can talk too.",
+  "phase": "Making her feel alive",
+  "focus": "Lip sync now forms real vowel shapes from the voice, every reply carries a mood that drives her face, and she has body language for listening and speaking. Searching for a properly licensed anime character model to replace the placeholder.",
   "appUrl": "app/",
   "milestones": [
     {

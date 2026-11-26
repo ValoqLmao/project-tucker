@@ -22,7 +22,7 @@ ws.on('message', (d, bin) => {
   if (m.type === 'user_partial') return;
   console.log(' ', m.type, m.text || m.value || m.message || '');
   if (m.type === 'user_final' && mode !== 'text') console.log(`  (end-of-turn detected ${Date.now() - t0} ms after speech ended)`);
-  if (m.type === 'reply_end' || m.type === 'error') { console.log(`  reply: ${text}\n  audio: ${(audio / 48000).toFixed(1)} s`); ws.close(); }
+  if (m.type === 'reply_end' || m.type === 'error') { console.log(`  reply: ${text}\n  audio: ${(audio / 48000).toFixed(1)} s`); ws.close(); setTimeout(() => process.exit(0), 200); }
 });
 ws.on('open', async () => {
   ws.send(JSON.stringify({ type: 'config', persona: process.argv[3] || 'sweet' }));

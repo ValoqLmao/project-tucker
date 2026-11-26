@@ -43,7 +43,9 @@ const picker = setupVoicePicker({
   onChange: (voice) => session?.configure(personaSel.value, voice),
 });
 $('voiceBtn').onclick = () => picker.open();
-let calmDown = 0; // seconds until her face relaxes back to neutral
+const BASELINE: Record<string, [Emotion, number]> = { sweet: ['happy', 0.3], roast: ['angry', 0.18], mommy: ['relaxed', 0.45], spicy: ['relaxed', 0.35] };
+const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['relaxed', 0.25]));
+let userTalking = false;
 
 async function loadAvatar() {
   try {
@@ -60,6 +62,7 @@ async function loadAvatar() {
   camera.position.set(0, head.y - 0.04, head.z + 1.9);
   camera.lookAt(0, head.y - 0.1, head.z);
   avatar.lookTarget.position.copy(camera.position);
+  applyBaseline();
   note.textContent = API ? '' : 'Preview build: the avatar is live, voice chat is not connected on this page yet.';
 }
 
@@ -69,6 +72,7 @@ async function loadPersonas() {
     const list: Persona[] = (personas = await (await fetch(`${API}/personas`)).json());
     personaSel.replaceChildren(...list.map((p) => new Option(`${p.name} — ${p.blurb}`, p.id)));
     document.body.classList.add('connected');
+    applyBaseline();
   } catch {
     note.textContent = 'The session server is not reachable, so she cannot talk right now.';
   }
@@ -76,12 +80,12 @@ async function loadPersonas() {
 
 function onEvent(e: ServerEvent) {
   switch (e.type) {
-    case 'user_start': you.textContent = '…'; break;
+    case 'user_start': you.textContent = '…'; userTalking = true; break;
     case 'user_partial':
-    case 'user_final': you.textContent = e.text; break;
+    case 'user_final': you.textContent = e.text; userTalking = e.type === 'user_partial'; break;
     case 'reply_start': her.textContent = ''; break;
     case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ,']+\]\s*|["“”*]/gi, ''); break;
-    case 'emotion': avatar?.setEmotion(e.value as Emotion); calmDown = 6; break;
+    case 'emotion': avatar?.setEmotion(e.value as Emotion); break;
     case 'error': note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;
   }
   captions.hidden = false;
@@ -123,14 +127,14 @@ form.onsubmit = async (ev) => {
   }
 };
 
-personaSel.onchange = () => { session?.configure(personaSel.value, picker.choices[personaSel.value] ?? null); her.textContent = ''; you.textContent = ''; };
+personaSel.onchange = () => { applyBaseline(); session?.configure(personaSel.value, picker.choices[personaSel.value] ?? null); her.textContent = ''; you.textContent = ''; };
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {
   const dt = Math.min(clock.getDelta(), 0.1);
   if (avatar) {
-    avatar.setMouth(session?.level() ?? 0);
-    if (calmDown > 0 && !session?.speaking && (calmDown -= dt) <= 0) avatar.setEmotion('neutral');
+    avatar.setVisemes(session?.visemes() ?? { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 });
+    avatar.setActivity(session?.speaking ? 'speaking' : userTalking ? 'listening' : 'idle');
     avatar.update(dt, camera);
   }
   renderer.render(scene, camera);
@@ -138,3 +142,22 @@ renderer.setAnimationLoop(() => {
 
 loadAvatar();
 loadPersonas();
+
+// Development aid: sample what the lip sync and face are doing from the console.
+if (import.meta.env.DEV) {
+  (window as any).__probe = (ms = 4000) =>
+    new Promise((resolve) => {
+      const rows: string[] = [];
+      const t0 = performance.now();
+      const id = setInterval(() => {
+        const v = session?.visemes();
+        const ex = avatar?.vrm.expressionManager;
+        rows.push(
+          `${Math.round(performance.now() - t0)}ms spk=${session?.speaking ? 1 : 0} ` +
+            (v ? Object.entries(v).map(([k, x]) => `${k}=${x.toFixed(2)}`).join(' ') : 'no-session') +
+            ` | happy=${ex?.getValue('happy')?.toFixed(2)} relaxed=${ex?.getValue('relaxed')?.toFixed(2)} aa=${ex?.getValue('aa')?.toFixed(2)}`,
+        );
+        if (performance.now() - t0 > ms) { clearInterval(id); resolve(rows.join('\n')); }
+      }, 150);
+    });
+}
