@@ -48,7 +48,7 @@ const server = http.createServer(async (req, res) => {
   if (url.pathname === '/config') return json(200, { gate: GATED });
   if (url.pathname === '/auth' && req.method === 'POST') {
     if (!GATED) return json(200, { token: '' });
-    if (!allowGuess(req.socket.remoteAddress || '?')) return json(429, { error: 'Too many attempts. Try again in a few minutes.' });
+    if (!allowGuess(req.socket.remoteAddress)) return json(429, { error: 'Too many attempts. Try again in a few minutes.' });
     let raw = '';
     for await (const c of req) { raw += c; if (raw.length > 2000) break; }
     let code = '';

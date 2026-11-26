@@ -4,9 +4,10 @@
 import { startSession } from './src/session.js';
 import { personaList } from './src/personas.js';
 import { FISH_OFFICIAL, usableVoice, publicVoice } from './src/voices.js';
-import { issueToken, checkToken, sameString, tokenSecret, makeLimiter } from './src/auth.js';
+import { issueToken, checkToken, sameString, tokenSecret, makeLimiter, clientKey } from './src/auth.js';
 
 const SESSION_LIMIT_MS = 45 * 60 * 1000;
+const MAX_SESSIONS_PER_CLIENT = 2;
 const allowGuess = makeLimiter();
 const voiceCache = new Map(); // search term -> { at, body }
 
@@ -60,7 +61,10 @@ export default {
     if (url.pathname === '/session') {
       if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'expected a WebSocket' }, 426, cors);
       if (!(await authed())) return json({ error: 'unauthorized' }, 401, cors);
-      return env.SESSION.get(env.SESSION.newUniqueId()).fetch(req);
+      // One Durable Object per client address hosts that client's conversations, which is what lets
+      // it count them and refuse more than a couple at once.
+      const who = clientKey(req.headers.get('cf-connecting-ip'));
+      return env.SESSION.get(env.SESSION.idFromName('client:' + who)).fetch(req);
     }
 
     return json({ error: 'not found' }, 404, cors);
@@ -88,11 +92,17 @@ function wrap(ws) {
 }
 
 export class Session {
-  constructor(_state, env) { this.env = env; }
+  constructor(_state, env) { this.env = env; this.active = 0; }
 
   async fetch() {
+    if (this.active >= MAX_SESSIONS_PER_CLIENT) return json({ error: 'Too many conversations open from this connection.' }, 429);
     const [client, server] = Object.values(new WebSocketPair());
     server.accept();
+    this.active++;
+    let counted = true;
+    const release = () => { if (counted) { counted = false; this.active--; } };
+    server.addEventListener('close', release);
+    server.addEventListener('error', release);
 
     // Outbound WebSockets from a Worker are opened with fetch + Upgrade, which is also the only
     // way to send the Authorization header the speech providers require.

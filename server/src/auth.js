@@ -30,13 +30,28 @@ export async function checkToken(secret, token) {
   return sameString(sig, await sign(secret, exp));
 }
 
-/** Small in-memory limiter for code guesses: `max` tries per `windowMs` per key. Best effort only. */
-export function makeLimiter(max = 8, windowMs = 10 * 60 * 1000) {
+/** One key per client: the address itself for IPv4, the /64 network for IPv6 (a single user owns the whole /64). */
+export function clientKey(ip) {
+  const s = String(ip || 'unknown').toLowerCase();
+  return s.includes(':') ? s.split(':').slice(0, 4).join(':') : s;
+}
+
+/**
+ * Small in-memory limiter for code guesses: `max` tries per `windowMs` per client. Best effort
+ * (memory is per process or isolate), so the access code itself must be long and random.
+ */
+export function makeLimiter(max = 8, windowMs = 10 * 60 * 1000, capacity = 5000) {
   const seen = new Map();
-  return (key) => {
-    const now = Date.now();
+  return (ip) => {
+    const key = clientKey(ip), now = Date.now();
     const e = seen.get(key);
-    if (!e || now - e.start > windowMs) { if (seen.size > 5000) seen.clear(); seen.set(key, { start: now, n: 1 }); return true; }
-    return ++e.n <= max;
+    if (e && now - e.start <= windowMs) return ++e.n <= max;
+    if (seen.size >= capacity) {
+      // Make room by dropping expired entries only; never forget a client still inside its window.
+      for (const [k, v] of seen) if (now - v.start > windowMs) seen.delete(k);
+      if (seen.size >= capacity) return false; // full of live entries: refuse rather than reset
+    }
+    seen.set(key, { start: now, n: 1 });
+    return true;
   };
 }
