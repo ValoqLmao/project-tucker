@@ -1,6 +1,8 @@
 import { defineConfig } from 'vite';
 import { rmSync, readdirSync } from 'node:fs';
+import { resolve } from 'node:path';
 
+let outDir = '';
 const LOCAL_MODELS = new URL('./public/local/models', import.meta.url);
 
 // Built into /docs/app so GitHub Pages serves it next to the tracker.
@@ -12,7 +14,8 @@ export default defineConfig({
       // public/local holds assets for this machine only (downloaded models and animations).
       // They are available in dev but must never reach the published build.
       name: 'local-assets',
-      closeBundle() { rmSync(new URL('../docs/app/local', import.meta.url), { recursive: true, force: true }); },
+      configResolved(config) { outDir = resolve(config.root, config.build.outDir); },
+      closeBundle() { if (outDir) rmSync(resolve(outDir, 'local'), { recursive: true, force: true }); },
       // In dev, list whatever .vrm files are in public/local/models so the app can offer them.
       configureServer(server) {
         server.middlewares.use('/local/models/index.json', (_req, res) => {
