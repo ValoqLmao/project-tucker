@@ -27,6 +27,17 @@ const store = env.RECORD === 'off' ? null : {
     await fs.mkdir(path.dirname(file), { recursive: true });
     await fs.writeFile(file, data);
   },
+  // A file that grows as the conversation goes; its header is filled in with the real length at the end.
+  open(key, _type, headerFor) {
+    const file = path.join(RECORD_DIR, key);
+    let size = 0;
+    let chain = fs.mkdir(path.dirname(file), { recursive: true }).then(() => fs.writeFile(file, headerFor(0)));
+    const next = (fn) => { chain = chain.then(fn).catch((e) => console.log('recording failed', e.message)); };
+    return {
+      write(bytes) { const copy = Uint8Array.from(bytes); size += copy.length; next(() => fs.appendFile(file, copy)); },
+      close() { next(async () => { const h = await fs.open(file, 'r+'); try { await h.write(headerFor(size), 0, 44, 0); } finally { await h.close(); } }); },
+    };
+  },
 };
 const voiceCache = new Map(); // search term -> { at, body }
 const GATED = !!env.ACCESS_CODE; // optional locally; the Cloudflare deployment requires it

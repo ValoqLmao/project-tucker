@@ -115,8 +115,64 @@ function wrap(ws) {
   return s;
 }
 
+const PART = 5 * 1024 * 1024; // R2 multipart: every part but the last must be this exact size
+
 export class Session {
   constructor(state, env) { this.state = state; this.env = env; this.active = 0; }
+
+  /** Where recordings go: the bucket, under recordings/. */
+  recorder() {
+    const bucket = this.env.ASSETS, keep = (p) => { this.state.waitUntil(p); return p; };
+    return {
+      put: (key, data, type) => keep(bucket.put(key, data, { httpMetadata: { contentType: type } })),
+      // A file that grows as the conversation goes, sent as a multipart upload so it never has to
+      // sit in memory whole. The first part carries the header, which needs the final length, so
+      // that one part is held back and uploaded last.
+      open: (key, type, headerFor) => {
+        let buf = new Uint8Array(PART), used = 44, size = 0, first = null, n = 1, upload = null;
+        const parts = [];
+        let chain = Promise.resolve();
+        const next = (fn) => { chain = chain.then(fn).catch((e) => console.log('recording failed', e?.message || e)); keep(chain); };
+        const flushFull = () => {
+          const full = buf, number = n++;
+          buf = new Uint8Array(PART);
+          used = 0;
+          if (number === 1) { first = full; return; }
+          next(async () => {
+            upload ??= await bucket.createMultipartUpload(key, { httpMetadata: { contentType: type } });
+            parts.push(await upload.uploadPart(number, full));
+          });
+        };
+        return {
+          write(bytes) {
+            size += bytes.length;
+            for (let at = 0; at < bytes.length;) {
+              const take = Math.min(PART - used, bytes.length - at);
+              buf.set(bytes.subarray(at, at + take), used);
+              used += take;
+              at += take;
+              if (used === PART) flushFull();
+            }
+          },
+          close() {
+            const tail = buf.subarray(0, used), tailNumber = n;
+            next(async () => {
+              const header = headerFor(size);
+              if (!first) { // short conversation: everything fits in one ordinary upload
+                tail.set(header, 0);
+                return bucket.put(key, tail, { httpMetadata: { contentType: type } });
+              }
+              first.set(header, 0);
+              upload ??= await bucket.createMultipartUpload(key, { httpMetadata: { contentType: type } });
+              parts.push(await upload.uploadPart(1, first));
+              if (tail.length) parts.push(await upload.uploadPart(tailNumber, tail));
+              await upload.complete(parts.sort((x, y) => x.partNumber - y.partNumber));
+            });
+          },
+        };
+      },
+    };
+  }
 
   async fetch() {
     if (this.active >= MAX_SESSIONS_PER_CLIENT) return json({ error: 'Too many conversations open from this connection.' }, 429);
@@ -138,9 +194,7 @@ export class Session {
     };
 
     // Conversations are recorded into the bucket under recordings/, which the /assets route never serves.
-    const store = this.env.ASSETS && this.env.RECORD !== 'off'
-      ? { put: (key, data, type) => { const p = this.env.ASSETS.put(key, data, { httpMetadata: { contentType: type } }); this.state.waitUntil(p); return p; } }
-      : null;
+    const store = this.env.ASSETS && this.env.RECORD !== 'off' ? this.recorder() : null;
     startSession({ client: wrap(server), openUpstream, env: this.env, store, log: (...a) => console.log(...a) });
     // The slot is freed here too, in case the close event never arrives for a dead connection.
     setTimeout(() => { try { server.close(1000, 'session time limit'); } catch {} release(); }, SESSION_LIMIT_MS);

@@ -53,18 +53,39 @@ function emotionFor(cue) {
   return hit && { value: hit[1], strength: hit[2] };
 }
 
-/** PCM16 mono chunks -> one WAV file. */
-function wav(chunks, sampleRate) {
-  const size = chunks.reduce((n, c) => n + c.length, 0);
-  const out = new Uint8Array(44 + size);
+/** The 44-byte header of a PCM16 mono WAV file holding `size` bytes of audio. */
+export function wavHeader(size, sampleRate) {
+  const out = new Uint8Array(44);
   const v = new DataView(out.buffer);
-  const tag = (at, s) => { for (let i = 0; i < 4; i++) out[at + i] = s.charCodeAt(i); };
+  const tag = (at, t) => { for (let i = 0; i < 4; i++) out[at + i] = t.charCodeAt(i); };
   tag(0, 'RIFF'); v.setUint32(4, 36 + size, true); tag(8, 'WAVE'); tag(12, 'fmt ');
   v.setUint32(16, 16, true); v.setUint16(20, 1, true); v.setUint16(22, 1, true);
   v.setUint32(24, sampleRate, true); v.setUint32(28, sampleRate * 2, true); v.setUint16(32, 2, true); v.setUint16(34, 16, true);
   tag(36, 'data'); v.setUint32(40, size, true);
+  return out;
+}
+
+/** PCM16 mono chunks -> one WAV file. */
+function wav(chunks, sampleRate) {
+  const size = chunks.reduce((n, c) => n + c.length, 0);
+  const out = new Uint8Array(44 + size);
+  out.set(wavHeader(size, sampleRate), 0);
   let at = 44;
   for (const c of chunks) { out.set(c, at); at += c.length; }
+  return out;
+}
+
+/** Change the sample rate of a PCM16 mono chunk by linear interpolation (good enough for speech). */
+function resample(chunk, from, to) {
+  const src = new DataView(chunk.buffer, chunk.byteOffset, chunk.length - (chunk.length % 2));
+  const n = src.byteLength >> 1;
+  const m = Math.floor((n * to) / from);
+  const out = new Uint8Array(m * 2);
+  const dst = new DataView(out.buffer);
+  for (let i = 0; i < m; i++) {
+    const x = (i * from) / to, i0 = Math.floor(x), i1 = Math.min(n - 1, i0 + 1), f = x - i0;
+    dst.setInt16(i * 2, Math.round(src.getInt16(i0 * 2, true) * (1 - f) + src.getInt16(i1 * 2, true) * f), true);
+  }
   return out;
 }
 
@@ -73,13 +94,15 @@ const PREROLL_FRAMES = 15; // ~1.2 s kept from before speech is detected, so the
 const MAX_FRAME_BYTES = 8192; // largest microphone frame accepted
 const MAX_TURN_BYTES = 90 * MIC_RATE * 2; // ~90 s of microphone audio kept per turn
 const MAX_REPLY_BYTES = 6 * 1024 * 1024; // ~2 minutes of voice per reply
+const MAX_CONVERSATION_BYTES = 400 * 1024 * 1024; // ~2.3 hours of combined audio, far beyond the session limit
 
 /**
  * @param client       {send(data), close()} plus assignable onmessage(data, isBinary) / onclose()
  * @param openUpstream (url, headers) => Promise<same socket shape>
  * @param env          {DEEPGRAM_API_KEY, FISH_API_KEY, OPENROUTER_API_KEY | VENICE_API_KEY, LLM_MODEL?, FISH_MODEL?, LLM_STUB?}
- * @param store        optional {put(key, data, contentType)}: where conversations are recorded.
- *                     Each session gets a folder holding transcript.json plus one WAV per spoken turn.
+ * @param store        optional {put(key, data, contentType), open?(key, contentType, headerFor)}: where
+ *                     conversations are recorded. Each session gets a folder holding transcript.json,
+ *                     one WAV per spoken turn, and conversation.wav: the whole exchange in order.
  */
 export function startSession({ client, openUpstream, env, store = null, log = () => {} }) {
   let persona = PERSONAS.mommy;
@@ -106,6 +129,28 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
   };
   const saveTranscript = () => { if (store && record.turns.length) putSafe(`${folder}/transcript.json`, JSON.stringify(record, null, 1), 'application/json'); };
   const pad = (n) => String(n).padStart(3, '0');
+
+  // conversation.wav: every spoken turn back to back, in the order it happened, as one file you can
+  // simply play. It is written as the conversation goes, so a long session never sits in memory.
+  let convo = null, convoBytes = 0;
+  const GAP = new Uint8Array(Math.round(TTS_SAMPLE_RATE * 0.35) * 2); // a breath of silence between turns
+  /** Append a turn to conversation.wav. Returns where it starts, in seconds, or null if not recorded. */
+  function addToConversation(chunks, rate) {
+    if (!store?.open || !chunks?.length || convoBytes > MAX_CONVERSATION_BYTES) return null;
+    try {
+      convo ??= store.open(`${folder}/conversation.wav`, 'audio/wav', (size) => wavHeader(size, TTS_SAMPLE_RATE));
+      const at = convoBytes / (TTS_SAMPLE_RATE * 2);
+      for (const c of chunks) {
+        const pcm = rate === TTS_SAMPLE_RATE ? c : resample(c, rate, TTS_SAMPLE_RATE);
+        convo.write(pcm);
+        convoBytes += pcm.length;
+      }
+      convo.write(GAP);
+      convoBytes += GAP.length;
+      record.conversation = 'conversation.wav';
+      return Math.round(at * 100) / 100;
+    } catch (e) { log('recording failed', e?.message || e); return null; }
+  }
   let preroll = [], capturing = null, capturedBytes = 0;
 
   // ---- speech to text -------------------------------------------------------
@@ -214,7 +259,10 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
     const r = (reply = { id: ++replySeq, n, ac: new AbortController(), tts: null, text: '', done: false, audio: [], audioBytes: 0, firstAudio: 0, truncated: false, at: '' });
     const live = () => reply === r && !closed;
     history.push({ role: 'user', content: userText });
-    record.turns.push({ n, role: 'user', at: new Date().toISOString(), source: userAudio ? 'voice' : 'text', text: userText, audio: saveAudio(`${pad(n)}-user.wav`, userAudio, MIC_RATE) });
+    record.turns.push({
+      n, role: 'user', at: new Date().toISOString(), source: userAudio ? 'voice' : 'text', text: userText,
+      audio: saveAudio(`${pad(n)}-user.wav`, userAudio, MIC_RATE), conversationAt: addToConversation(userAudio, MIC_RATE),
+    });
     send({ type: 'user_final', text: userText });
     send({ type: 'reply_start', id: r.id });
     const t0 = Date.now();
@@ -301,6 +349,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
     record.turns.push({
       n: r.n, role: 'assistant', at: r.at, persona: persona.name, voice: voice || persona.voice || null, text: r.text.trim(),
       firstAudioMs: r.firstAudio || null, interrupted, truncated: r.truncated, audio: saveAudio(`${pad(r.n)}-assistant.wav`, r.audio, TTS_SAMPLE_RATE),
+      conversationAt: addToConversation(r.audio, TTS_SAMPLE_RATE),
     });
     r.audio = [];
     saveTranscript();
@@ -353,6 +402,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
     const r = reply;
     if (r) { reply = null; r.ac.abort(); try { r.tts?.close(); } catch {} logReply(r, true); }
     closed = true;
+    try { convo?.close(); } catch (e) { log('recording failed', e?.message || e); }
     try { stt?.send(JSON.stringify({ type: 'CloseStream' })); stt?.close(); } catch {}
     warmTts?.then((t) => t.close()).catch(() => {});
   };
