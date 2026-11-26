@@ -7,6 +7,7 @@
 //                              emotion | reply_end | interrupt | error
 import { encode, decode } from '@msgpack/msgpack';
 import { PERSONAS } from './personas.js';
+import { voiceAllowed } from './voices.js';
 
 const STT_URL =
   'wss://api.deepgram.com/v2/listen?model=flux-general-en&encoding=linear16&sample_rate=16000&eot_threshold=0.7&eot_timeout_ms=3000';
@@ -235,8 +236,14 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
     try { m = JSON.parse(data.toString()); } catch { return; }
     if (m.type === 'config') {
       if (PERSONAS[m.persona] && PERSONAS[m.persona] !== persona) { persona = PERSONAS[m.persona]; history.length = 0; voice = null; interrupt(); }
-      if (typeof m.voice === 'string' && /^[a-f0-9]{16,64}$/i.test(m.voice)) voice = m.voice;
-      else if (m.voice === null) voice = null;
+      if (typeof m.voice === 'string' && /^[a-f0-9]{16,64}$/i.test(m.voice)) {
+        const want = m.voice, forPersona = persona;
+        voiceAllowed(want, env.FISH_API_KEY).then((ok) => {
+          if (persona !== forPersona || closed) return;
+          if (ok) voice = want;
+          else send({ type: 'error', where: 'voice', message: 'That voice is not available here.' });
+        });
+      } else if (m.voice === null) voice = null;
     } else if (m.type === 'text' && typeof m.text === 'string' && m.text.trim()) {
       respond(m.text.trim().slice(0, 2000));
     } else if (m.type === 'interrupt') {
