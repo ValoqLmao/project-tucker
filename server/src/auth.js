@@ -62,9 +62,11 @@ export function makeLimiter(max = 8, windowMs = 10 * 60 * 1000, capacity = 5000,
   return (ip) => {
     const key = clientKey(ip), now = Date.now();
     if (now - globalStart > windowMs) { globalStart = now; globalCount = 0; }
-    if (++globalCount > globalMax) return false;
     const e = seen.get(key);
-    if (e && now - e.start <= windowMs) return ++e.n <= max;
+    // A client that is already over its own limit is turned away before it can touch the shared
+    // budget, so one throttled client cannot use that budget up for everyone else.
+    if (e && now - e.start <= windowMs) return ++e.n <= max && ++globalCount <= globalMax;
+    if (++globalCount > globalMax) return false;
     seen.delete(key);
     // Full: drop the oldest entry. New clients are never locked out, and the global ceiling
     // above still bounds what an attacker gains by cycling addresses to push entries out.
