@@ -48,19 +48,23 @@ const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?
 let userTalking = false;
 const focus = new THREE.Vector3(0, 1.4, 0); // smoothed head position the camera frames
 
-async function loadAvatar() {
+const BASE = import.meta.env.BASE_URL;
+const PLACEHOLDER = `${BASE}models/placeholder.vrm`;
+const modelSel = $<HTMLSelectElement>('model');
+let loading = 0;
+
+async function loadAvatar(url: string) {
+  const mine = ++loading;
+  let next: Avatar;
   try {
-    // A model dropped into public/local/models/avatar.vrm (this machine only) replaces the placeholder.
-    const own = `${import.meta.env.BASE_URL}local/models/avatar.vrm`;
-    const head = await fetch(own, { method: 'HEAD' }).catch(() => null);
-    const hasOwn = !!head?.ok && !(head.headers.get('content-type') || '').includes('text/html');
-    avatar = await Avatar.load(hasOwn ? own : `${import.meta.env.BASE_URL}models/placeholder.vrm`, (f) => {
-      note.textContent = `Loading avatar… ${Math.round(f * 100)}%`;
-    });
+    next = await Avatar.load(url, (f) => { if (mine === loading) note.textContent = `Loading avatar… ${Math.round(f * 100)}%`; });
   } catch (e) {
-    note.textContent = 'The avatar failed to load. Reload the page to try again.';
+    if (mine === loading) note.textContent = 'That model failed to load.';
     throw e;
   }
+  if (mine !== loading) return next.dispose(); // a newer choice won
+  if (avatar) { scene.remove(avatar.vrm.scene, avatar.lookTarget); avatar.dispose(); }
+  avatar = next;
   scene.add(avatar.vrm.scene, avatar.lookTarget);
   avatar.vrm.scene.updateMatrixWorld(true);
   const head = avatar.headPosition;
@@ -70,11 +74,32 @@ async function loadAvatar() {
   focus.copy(head);
   applyBaseline();
   // Motion clips. The richer set lives in public/local (not published); the bundled loop is the fallback.
-  const base = import.meta.env.BASE_URL;
   // Only the calm loops: the livelier ones swing the arms and turn the head far more than a person in conversation does.
-  const local = ['idle_5', 'idle'].map((n) => `${base}local/animations/${n}.vrma`);
-  avatar.loadAnimations(local).then((n) => n || avatar!.loadAnimations([`${base}animations/idle_loop.vrma`]));
+  const local = ['idle_5', 'idle'].map((n) => `${BASE}local/animations/${n}.vrma`);
+  const a = avatar;
+  a.loadAnimations(local).then((n) => n || a.loadAnimations([`${BASE}animations/idle_loop.vrma`]));
   note.textContent = API ? '' : 'Preview build: the avatar is live, voice chat is not connected on this page yet.';
+}
+
+/** Offer any models found in public/local/models (dev only) next to the bundled placeholder. */
+async function setupModels() {
+  let files: string[] = [];
+  try {
+    const r = await fetch(`${BASE}local/models/index.json`);
+    if (r.ok && (r.headers.get('content-type') || '').includes('json')) files = await r.json();
+  } catch {}
+  const pretty = (f: string) => f.replace(/.vrm$/i, '').replace(/[_-]+/g, ' ').replace(/w/g, (c) => c.toUpperCase());
+  modelSel.replaceChildren(new Option('Placeholder', PLACEHOLDER), ...files.map((f) => new Option(pretty(f), `${BASE}local/models/${encodeURIComponent(f)}`)));
+  modelSel.hidden = files.length === 0;
+  let saved: string | null = null;
+  try { saved = localStorage.getItem('tucker.model'); } catch {}
+  if (saved && [...modelSel.options].some((o) => o.value === saved)) modelSel.value = saved;
+  else if (files.length) modelSel.selectedIndex = 1;
+  modelSel.onchange = () => {
+    try { localStorage.setItem('tucker.model', modelSel.value); } catch {}
+    loadAvatar(modelSel.value).catch(() => {});
+  };
+  await loadAvatar(modelSel.value);
 }
 
 async function loadPersonas() {
@@ -151,17 +176,21 @@ renderer.setAnimationLoop(() => {
     // The clips move her around a little; the camera follows her head loosely so she stays framed.
     const head = avatar.headPosition;
     focus.lerp(head, 1 - Math.exp(-dt * 2.5));
-    camera.position.set(focus.x * 0.85, focus.y - 0.04, focus.z + 1.9);
+    // A camera on a tripod looks dead; a centimetre of slow drift does not.
+    const ct = timer.getElapsed();
+    camera.position.set(focus.x * 0.85 + Math.sin(ct * 0.31) * 0.012, focus.y - 0.02 + Math.sin(ct * 0.23) * 0.008, focus.z + 1.9);
     camera.lookAt(focus.x, focus.y - 0.1, focus.z);
   }
   renderer.render(scene, camera);
 });
 
-loadAvatar();
+setupModels();
 loadPersonas();
 
 // Development aid: sample what the lip sync and face are doing from the console.
 if (import.meta.env.DEV) {
+  Object.defineProperty(window, '__avatar', { get: () => avatar });
+  (window as any).__camera = camera;
   (window as any).__probe = (ms = 4000) =>
     new Promise((resolve) => {
       const rows: string[] = [];

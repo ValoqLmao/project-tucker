@@ -42,7 +42,6 @@ export class Avatar {
   private glanceIn = 3;
   private saccade = new THREE.Vector3();
   private saccadeIn = 0.5;
-  private eyesWide = 0;
 
   private emotion: Emotion = 'neutral';
   private intensity = 0;
@@ -60,7 +59,15 @@ export class Avatar {
   private gestureTarget = 0;
   private gestureIn = 1;
   private gestureSide = 1;
-  private nod = 0; // seconds left of a nod
+  private nodT = 0;
+  private nodDur = 0;
+  private nodAmp = 0;
+  private sinceNod = 9;
+  private loudAvg = 0;
+  private wasSpeaking = false;
+  private brow = 0; // 1 -> 0 eyebrow flash
+  private averted = false;
+  private emotionAge = 0;
 
   // Clip playback
   private mixer: THREE.AnimationMixer;
@@ -84,7 +91,8 @@ export class Avatar {
     const gltf = await loader.loadAsync(url, (e) => e.total && onProgress?.(e.loaded / e.total));
     const vrm = gltf.userData.vrm as VRM;
     VRMUtils.removeUnnecessaryVertices(gltf.scene);
-    VRMUtils.combineSkeletons(gltf.scene);
+    // VRMUtils.combineSkeletons is deliberately not used: it is only a draw-call optimisation, and it
+    // scrambles models converted from MMD (the head ends up rotated with the hair streaming sideways).
     VRMUtils.rotateVRM0(vrm); // no-op for VRM 1.0, turns VRM 0.x models to face the camera
     vrm.scene.traverse((o) => (o.frustumCulled = false));
     return new Avatar(vrm);
@@ -127,6 +135,12 @@ export class Avatar {
     this.nextIdleIn = action.getClip().duration * (1 + Math.floor(Math.random() * 2)) - fade;
   }
 
+  /** Free GPU memory when this character is swapped out. */
+  dispose() {
+    this.mixer.stopAllAction();
+    VRMUtils.deepDispose(this.vrm.scene);
+  }
+
   get headPosition(): THREE.Vector3 {
     const head = this.vrm.humanoid.getNormalizedBoneNode('head');
     return head ? head.getWorldPosition(new THREE.Vector3()) : new THREE.Vector3(0, 1.4, 0);
@@ -140,13 +154,22 @@ export class Avatar {
     this.emotion = e;
     this.intensity = e === 'neutral' ? 0 : intensity;
     this.emotionHold = hold;
-    if (e === 'surprised') { this.blinkIn = 0.7; this.eyesWide = 1; }
+    this.emotionAge = 0;
+    if (e === 'surprised') this.blinkIn = 0.7; // wide eyes first, then a blink
   }
 
   setActivity(a: Activity) {
     if (a === this.activity) return;
-    if (this.activity === 'listening') this.nod = 0.5; // small "got it" nod when they finish
+    if (this.activity === 'listening') this.startNod(0.06, 0.45); // small "got it" nod when they finish
+    if (a !== 'speaking') { this.averted = false; this.glance.set(0, 0, 0); this.glanceIn = 2 + Math.random() * 3; } // back to eye contact
     this.activity = a;
+  }
+
+  private startNod(amp: number, dur: number) {
+    this.nodAmp = amp;
+    this.nodDur = dur;
+    this.nodT = 0;
+    this.sinceNod = 0;
   }
 
   /** Mouth shapes for the sound currently playing, each 0..1. */
@@ -185,92 +208,141 @@ export class Avatar {
     }
 
     // --- body: procedural layer ---------------------------------------------
-    const breath = Math.sin(t * 1.5);
-    this.nod = Math.max(0, this.nod - dt);
-    const nodding = this.nod > 0 ? Math.sin((0.5 - this.nod) * Math.PI * 4) * 0.08 : 0;
-    const emphasis = en * 0.03 * Math.sin(t * 6.1) + en * 0.035; // slight dip and bob on stressed syllables
+    // Breathing cycle: in 1.2 s, hold 0.5 s, out 1.0 s, rest 1.5 s.
+    const bp = t % 4.2;
+    const breath01 = bp < 1.2 ? 0.5 - 0.5 * Math.cos((bp / 1.2) * Math.PI) : bp < 1.7 ? 1 : bp < 2.7 ? 0.5 + 0.5 * Math.cos((bp - 1.7) * Math.PI) : 0;
+    const breath = breath01 * 2 - 1;
+    const f = this.vrm.meta?.metaVersion === '0' ? -1 : 1; // VRM 0.x rigs face the other way in their own space
+
+    // Speech-driven head. People nod on stressed syllables and dip their head as they start talking;
+    // random sway reads as eerie, so the motion is tied to her actual voice.
+    this.loudAvg = damp(this.loudAvg, loud, 2, dt);
+    this.sinceNod += dt;
+    if (this.activity === 'speaking') {
+      if (!this.wasSpeaking) this.startNod(0.045, 0.45);
+      else if (this.sinceNod > 1 && loud > 0.35 && loud > this.loudAvg * 1.3) {
+        if (Math.random() < 0.5) {
+          this.startNod(0.035 + Math.random() * 0.035, 0.25 + Math.random() * 0.15);
+          if (loud > 0.6 && Math.random() < 0.4) this.brow = 1; // eyebrow flash on the strongest stresses
+        } else this.sinceNod = 0.5;
+      }
+    }
+    this.wasSpeaking = this.activity === 'speaking';
+    let nodding = 0;
+    if (this.nodDur > 0) {
+      this.nodT += dt;
+      const p = this.nodT / this.nodDur;
+      if (p >= 1) this.nodDur = 0;
+      else nodding = this.nodAmp * Math.sin(Math.PI * p) * (1.15 - 0.4 * p); // quick down, softer return
+    }
 
     if (!clips) {
       const sway = wander(t * 0.35, 1), shift = wander(t * 0.22, 2);
-      set('hips', 0, sway * 0.06 + shift * 0.04, shift * 0.04);
-      set('spine', breath * 0.014 + li * 0.05 + sp * 0.02, -sway * 0.03, -shift * 0.035);
-      set('leftShoulder', 0, 0, -breath * 0.014 - 0.03);
-      set('rightShoulder', 0, 0, breath * 0.014 + 0.03);
+      set('hips', 0, sway * 0.05 + shift * 0.03, shift * 0.03);
+      set('spine', f * (breath * 0.012 + li * 0.04), -sway * 0.025, -shift * 0.03);
+      set('leftShoulder', 0, 0, -breath * 0.012 - 0.03);
+      set('rightShoulder', 0, 0, breath * 0.012 + 0.03);
       this.proceduralArms(dt, set, breath, en);
+      add('chest', f * breath * 0.012, wander(t * 0.5, 3) * 0.012, 0);
     } else {
-      add('spine', li * 0.05 + sp * 0.015, 0, 0);
+      add('spine', f * li * 0.04, 0, 0); // lean in a touch while listening
+      this.faceViewer(camera, 0.75); // clips turn her head wherever they like; she should be talking to you
     }
-    add('chest', breath * 0.012 + en * 0.012, wander(t * 0.5, 3) * 0.015, 0);
-    if (clips) this.faceViewer(camera, 0.75); // clips turn her head wherever they like; she should be talking to you
-    add('neck', li * 0.03 + nodding * 0.4, wander(t * 0.4, 4) * 0.03, li * 0.03);
+    // Slow drift of a degree or two, plus the nods. Sideways gaze shifts bring the head along a little.
+    const follow = this.glance.x * 0.35;
+    add('neck', f * (li * 0.02 + nodding * 0.35), wander(t * 0.25, 4) * 0.015 + follow * 0.4, f * li * 0.02);
     add(
       'head',
-      wander(t * 0.6, 5) * 0.02 + nodding + sp * emphasis - li * 0.02,
-      wander(t * 0.45, 6) * 0.035 * (1 + sp * 0.5),
-      wander(t * 0.3, 7) * 0.02 + li * 0.06 + sp * wander(t * 1.1, 8) * 0.025,
+      f * (wander(t * 0.3, 5) * 0.012 + nodding - li * 0.015),
+      wander(t * 0.22, 6) * (0.02 + sp * 0.015) + follow * 0.6,
+      f * (wander(t * 0.17, 7) * 0.012 + li * 0.045),
     );
     if (clips && !this.fingersAnimated) this.relaxFingers(set, 0, 0);
 
     // --- eyes ---------------------------------------------------------------
-    // Hold the viewer's gaze most of the time, glance away now and then, and never sit perfectly
-    // still: real eyes make small jumps every fraction of a second.
+    // Eye contact with short looks away. Timings follow conversational gaze studies, biased toward
+    // more contact because on a screen "away" quickly reads as bored: while speaking, a few seconds
+    // of contact then about a second away; while listening, long contact and brief flicks.
     this.glanceIn -= dt;
     if (this.glanceIn <= 0) {
-      // Mostly eye contact: rare, short looks away, a little more often while she is the one talking.
-      const away = Math.random() < (this.activity === 'speaking' ? 0.3 : 0.12);
-      this.glance.set(away ? (Math.random() - 0.5) * 0.5 : 0, away ? (Math.random() - 0.4) * 0.25 : 0, 0);
-      this.glanceIn = away ? 0.5 + Math.random() * 0.8 : 2.5 + Math.random() * 4;
-      if (away && Math.random() < 0.5) this.blinkIn = Math.min(this.blinkIn, 0.05); // people often blink as they shift gaze
+      const speaking = this.activity === 'speaking';
+      if (this.averted) {
+        this.averted = false;
+        this.glance.set(0, 0, 0);
+        this.glanceIn = speaking ? 2 + Math.random() * 4 : 6 + Math.random() * 4;
+      } else {
+        this.averted = true;
+        const mag = 0.17 + Math.random() * 0.2; // roughly 5 to 11 degrees at this distance
+        const r = Math.random();
+        if (r < 0.4) this.glance.set(mag, 0, 0);
+        else if (r < 0.8) this.glance.set(-mag, 0, 0);
+        else this.glance.set((Math.random() - 0.5) * 0.12, -mag * 0.7, 0);
+        this.glanceIn = speaking ? 0.5 + Math.random() * 0.7 : 0.3 + Math.random() * 0.3;
+        if (Math.random() < 0.6) this.blinkIn = Math.min(this.blinkIn, 0.04); // people usually blink as they shift gaze
+      }
     }
+    // Even during eye contact the eyes are never perfectly still: tiny jumps of a degree or two.
     this.saccadeIn -= dt;
     if (this.saccadeIn <= 0) {
-      this.saccade.set((Math.random() - 0.5) * 0.09, (Math.random() - 0.5) * 0.05, 0);
-      this.saccadeIn = 0.25 + Math.random() * 1.1;
+      const horizontal = Math.random() < 0.6;
+      const m = (0.03 + Math.random() * 0.035) * (Math.random() < 0.5 ? -1 : 1);
+      this.saccade.set(horizontal ? m : 0, horizontal ? 0 : m * 0.7, 0);
+      this.saccadeIn = 0.8 + Math.random() * 2;
     }
     const want = camera.getWorldPosition(new THREE.Vector3()).add(this.glance).add(this.saccade);
-    this.lookTarget.position.lerp(want, 1 - Math.exp(-dt * 22)); // fast, like an eye, not a camera pan
+    this.lookTarget.position.lerp(want, 1 - Math.exp(-dt * 24)); // eyes jump, they do not pan
 
-    if (!ex) return this.vrm.update(dt);
+    if (!ex) return this.vrm.update(Math.min(dt, 1 / 30));
 
     // --- face ---------------------------------------------------------------
-    if (this.emotionHold > 0 && this.activity !== 'speaking' && (this.emotionHold -= dt) <= 0) this.intensity = 0;
-    this.eyesWide = damp(this.eyesWide, 0, 1.5, dt);
-    let squint = 0;
+    // A mood is a flash, not a mask: it holds while she is saying the line (8 s at most), lingers
+    // briefly, then gives way to her resting face. Only one preset leads at a time.
+    this.emotionAge += dt;
+    if (this.intensity > 0) {
+      if (this.activity !== 'speaking') this.emotionHold -= dt;
+      if (this.emotionHold <= 0 || this.emotionAge > 8) this.intensity = 0;
+    }
+    this.brow = Math.max(0, this.brow - dt / 0.3);
+    let lead = 0, eyeClosing = 0;
     for (const e of EMOTIONS) {
       let target = this.emotion === e ? this.intensity : 0;
-      if (this.baseline.emotion === e) target = Math.max(target, this.baseline.weight * (this.intensity > 0.3 && this.emotion !== e ? 0.2 : 1));
-      if (e === 'happy') target = Math.max(target, li * 0.08); // hint of an attentive smile while listening
-      // Moods breathe a little instead of holding a frozen mask.
-      target *= 1 + wander(t * 0.9, 20 + EMOTIONS.indexOf(e)) * 0.12;
-      const w = (this.weights[e] = damp(this.weights[e] ?? 0, Math.max(0, target), 5, dt));
-      // While talking, big expressions give way a little so the mouth shapes stay readable.
-      ex.setValue(e, Math.min(1, w * (1 - 0.35 * sp * Math.min(1, en * 2))));
-      if (e === 'happy' || e === 'relaxed') squint = Math.max(squint, w);
+      if (this.baseline.emotion === e) target = Math.max(target, this.baseline.weight * (this.intensity > 0.2 && this.emotion !== e ? 0 : 1));
+      if (e === 'happy') target = Math.min(0.6, Math.max(target, li * 0.06)); // full "happy" is a closed-eye grin
+      if (e === 'surprised') target = Math.max(target, this.brow * 0.13);
+      // Rise quickly, fall slowly.
+      const cur = this.weights[e] ?? 0;
+      const w = (this.weights[e] = damp(cur, Math.max(0, target), target > cur ? 6 : 1.6, dt));
+      ex.setValue(e, w);
+      lead = Math.max(lead, w);
+      if (e === 'happy' || e === 'relaxed') eyeClosing = Math.max(eyeClosing, w);
     }
 
-    // Blink at irregular intervals, sometimes twice in a row; a little more often while talking.
+    // Blinking: fast close, slower open; about 15 a minute at rest and more while talking,
+    // with the occasional double blink. Skipped while a smile is already narrowing the eyes.
     let blink = 0;
     if (this.blinkPhase >= 0) {
       this.blinkPhase += dt;
-      const p = this.blinkPhase / 0.15;
-      blink = p < 1 ? Math.sin(p * Math.PI) : 0;
-      if (p >= 1) { this.blinkPhase = -1; this.blinkIn = Math.random() < 0.2 ? 0.12 : (1.2 + Math.random() * 3.8) * (1 - sp * 0.3); }
+      const p = this.blinkPhase / 0.17;
+      blink = p < 0.35 ? p / 0.35 : p < 1 ? 1 - (p - 0.35) / 0.65 : 0;
+      if (p >= 1) {
+        this.blinkPhase = -1;
+        this.blinkIn = Math.random() < 0.12 ? 0.1 : this.activity === 'speaking' ? 1.5 + Math.random() * 2.5 : 2 + Math.random() * 4;
+      }
     } else if ((this.blinkIn -= dt) <= 0) {
-      this.blinkPhase = 0;
+      if (eyeClosing > 0.4) this.blinkIn = 0.5;
+      else this.blinkPhase = 0;
     }
-    // Smiles already narrow the eyes; a full blink on top looks broken.
-    ex.setValue('blink', blink * (1 - 0.7 * squint));
+    ex.setValue('blink', blink * (1 - eyeClosing));
 
-    // Mouth: opens fast, closes a little slower. Shapes are scaled down as the smile grows,
-    // because the smile preset already opens the mouth on most models.
-    const room = 1 - 0.45 * (this.weights.happy ?? 0);
+    // Mouth shapes give way when an expression already owns the mouth.
+    const room = lead > 0.3 ? 0.5 : 0.8;
     for (const v of VOWELS) {
       const target = this.mouthTarget[v];
-      this.mouth[v] = damp(this.mouth[v], target, target > this.mouth[v] ? 32 : 18, dt);
+      this.mouth[v] = damp(this.mouth[v], target, target > this.mouth[v] ? 24 : 13, dt);
       ex.setValue(v, Math.min(1, this.mouth[v]) * room);
     }
 
-    this.vrm.update(dt);
+    this.vrm.update(Math.min(dt, 1 / 30)); // hair and cloth springs misbehave on long frames
   }
 
   private get fingersAnimated() { return [...this.animated].some((n) => /Index/i.test(n)); }

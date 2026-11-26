@@ -21,7 +21,8 @@
   #talk[aria-pressed="true"] { background: #262231; color: #ff7ab8; }
   #say { display: flex; gap: 8px; flex: 1 1 260px; }
   #text { flex: 1; }
-  #persona { flex: 1 1 60%; }
+  #persona { flex: 1 1 45%; }
+  #model { flex: 0 1 150px; }
   dialog { background: #17151d; color: inherit; border: 1px solid #3a3548; border-radius: 16px; padding: 18px; width: min(620px, calc(100vw - 32px)); max-height: min(80vh, 720px); box-sizing: border-box; }
   dialog[open] { display: flex; flex-direction: column; gap: 10px; }
   dialog::backdrop { background: #000a; }
@@ -47,6 +48,7 @@
   <div id="controls">
     <select id="persona" aria-label="Personality"></select>
     <button id="voiceBtn" type="button">Voice</button>
+    <select id="model" aria-label="Character model" hidden></select>
     <button id="talk" aria-pressed="false">Start talking</button>
     <form id="say"><input id="text" placeholder="or type to her…" autocomplete="off" aria-label="Message"><button>Send</button></form>
   </div>

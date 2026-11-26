@@ -2,7 +2,7 @@
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
   "phase": "Making her feel alive",
-  "focus": "Calming her down: only subtle idle motion, head turned to the viewer, mild expressions by default with strong ones reserved for strong moments. Researching what makes companion animation believable, and lining up a better character model.",
+  "focus": "Motion now follows conversational-behaviour research: nods on stressed syllables, eye contact with short looks away, natural blink rates, moods that flash and fade. A character switcher lets the local build swap models.",
   "appUrl": "app/",
   "milestones": [
     {
@@ -22,8 +22,8 @@
       "state": "done"
     },
     {
-      "name": "Custom original character model (VRoid Studio)",
-      "state": "todo"
+      "name": "Character model (switchable locally)",
+      "state": "doing"
     },
     {
       "name": "Voice loop: mic in, streamed reply, lip sync, interruptions",
