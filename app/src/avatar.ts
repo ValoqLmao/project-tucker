@@ -4,6 +4,8 @@ import { VRM, VRMLoaderPlugin, VRMUtils, type VRMHumanBoneName } from '@pixiv/th
 import { VRMAnimationLoaderPlugin, VRMLookAtQuaternionProxy, createVRMAnimationClip, type VRMAnimation } from '@pixiv/three-vrm-animation';
 
 import { FaceRig } from './face';
+import { FaceDecals } from './decals';
+import { Moves } from './moves';
 
 export type Visemes = { aa: number; ih: number; ou: number; ee: number; oh: number };
 export type Activity = 'idle' | 'listening' | 'thinking' | 'speaking';
@@ -44,6 +46,9 @@ export class Avatar {
   private saccadeIn = 0.5;
 
   readonly face: FaceRig;
+  private decals: FaceDecals;
+  private moves = new Moves();
+  private blinkNow = 0;
   private headFollow = 0; // smoothed sideways turn of the head toward where the eyes went
 
   private mouth: Visemes = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
@@ -81,6 +86,7 @@ export class Avatar {
     }
     this.mixer = new THREE.AnimationMixer(vrm.scene);
     this.face = new FaceRig(vrm);
+    this.decals = new FaceDecals(vrm);
   }
 
   static async load(url: string, onProgress?: (fraction: number) => void): Promise<Avatar> {
@@ -134,6 +140,7 @@ export class Avatar {
   /** Free GPU memory when this character is swapped out. */
   dispose() {
     this.mixer.stopAllAction();
+    this.decals.dispose();
     VRMUtils.deepDispose(this.vrm.scene);
   }
 
@@ -148,6 +155,7 @@ export class Avatar {
   /** React with a named expression (see EXPRESSIONS in face.ts). */
   setEmotion(expression: string, strength = 0.6) {
     this.face.show(expression, strength);
+    this.moves.react(expression, strength);
     this.blinkIn = Math.min(this.blinkIn, 0.06); // people blink as their expression changes, and it hides the switch
     if (expression === 'surprised') this.blinkIn = 0.7; // wide eyes first, then a blink
   }
@@ -261,6 +269,12 @@ export class Avatar {
       wander(t * 0.22, 6) * (0.02 + sp * 0.015) + follow * 0.6,
       f * (wander(t * 0.17, 7) * 0.012 + li * 0.02 + this.face.pose.roll),
     );
+    // Reaction moves ride on top of everything else.
+    const mv = this.moves.update(dt);
+    if (mv.hp || mv.hy || mv.hr) add('head', f * (mv.hp ?? 0), mv.hy ?? 0, f * (mv.hr ?? 0));
+    if (mv.cp) add('chest', f * mv.cp, 0, 0);
+    if (mv.sp) add('spine', f * mv.sp, 0, 0);
+    if (mv.sh) { add('leftShoulder', 0, 0, f * mv.sh); add('rightShoulder', 0, 0, -f * mv.sh); }
     if (clips && !this.fingersAnimated) this.relaxFingers(set, 0, 0);
 
     // --- eyes ---------------------------------------------------------------
@@ -320,6 +334,7 @@ export class Avatar {
       else this.blinkPhase = 0;
     }
     ex.setValue('blink', blink * (1 - eyeClosing));
+    this.blinkNow = blink;
 
     // Mouth shapes give way when an expression already owns the mouth.
     const room = 0.85 - 0.4 * this.face.mouthBusy;
@@ -331,6 +346,8 @@ export class Avatar {
 
     this.vrm.update(Math.min(dt, 1 / 30)); // hair and cloth springs misbehave on long frames
     this.face.update(dt, this.activity === 'speaking', en); // after vrm.update, which resets preset-owned morphs
+    const eyesOpen = Math.max(0, 1 - this.blinkNow - this.face.eyesNarrowed * 0.9);
+    this.decals.update(dt, this.face.hasBlushMorph ? 0 : this.face.blush, eyesOpen, this.face.sparkle);
   }
 
   private get fingersAnimated() { return [...this.animated].some((n) => /Index/i.test(n)); }

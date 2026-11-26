@@ -2,6 +2,7 @@ import * as THREE from 'three';
 import { Avatar } from './avatar';
 import { VoiceSession, type ServerEvent } from './voice';
 import { setupVoicePicker } from './voicePicker';
+import { Stage } from './stage';
 
 // Where the session server lives. Empty in production builds until a backend is deployed.
 const API = (import.meta.env.VITE_API_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://127.0.0.1:8787' : '');
@@ -18,13 +19,16 @@ document.body.prepend(renderer.domElement);
 
 const scene = new THREE.Scene();
 const camera = new THREE.PerspectiveCamera(24, 1, 0.1, 20);
-scene.add(new THREE.AmbientLight(0xffffff, 1.3));
-const key = new THREE.DirectionalLight(0xfff1f6, 2.2);
+scene.add(new THREE.AmbientLight(0xffffff, 1.05));
+const key = new THREE.DirectionalLight(0xfff1f6, 1.7);
 key.position.set(0.6, 1.2, 1.5);
 scene.add(key);
 
+const stage = new Stage(renderer, scene, camera);
+
 function resize() {
   renderer.setSize(innerWidth, innerHeight, false);
+  stage.resize(innerWidth, innerHeight);
   camera.aspect = innerWidth / innerHeight;
   camera.updateProjectionMatrix();
 }
@@ -184,7 +188,7 @@ renderer.setAnimationLoop(() => {
     camera.position.set(focus.x * 0.85 + Math.sin(ct * 0.31) * 0.012, focus.y - 0.02 + Math.sin(ct * 0.23) * 0.008, focus.z + 1.5 * (1 - 0.08 * avatar.face.pose.lean)); // drifts closer on warm or intimate moments
     camera.lookAt(focus.x, focus.y - 0.1, focus.z);
   }
-  renderer.render(scene, camera);
+  stage.render(dt);
 });
 
 setupModels();

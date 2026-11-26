@@ -116,6 +116,11 @@ export class FaceRig {
 
   /** Head, gaze and lean that go with the current expression; eased, read by the avatar and camera. */
   readonly pose = { pitch: 0, roll: 0, gazeX: 0, gazeY: 0, lean: 0 };
+  /** How flushed the current feeling makes her, 0..1 (for models that need the blush painted on). */
+  blush = 0;
+  /** Extra life in the eyes for delighted moments, 0..1. */
+  sparkle = 0;
+  get hasBlushMorph() { return this.targets.has('blush'); }
 
   constructor(private vrm: VRM) {
     const byName = new Map<string, Target[]>();
@@ -190,6 +195,9 @@ export class FaceRig {
     const rest = EXPRESSIONS[this.resting.name];
     // The resting face steps back while a reaction is up, so two moods never fight.
     const restLevel = this.resting.strength * (1 - Math.min(1, level * 1.6));
+
+    this.blush = Math.min(1, (active?.blush ?? 0) * level + (rest.blush ?? 0) * restLevel);
+    this.sparkle = ['happy', 'excited', 'laughing', 'warm', 'flirty', 'playful'].includes(this.name) ? level : 0;
 
     // Body language for the feeling. The head arrives after the face, as it does on people.
     this.t += dt;
