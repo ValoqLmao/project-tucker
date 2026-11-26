@@ -3,7 +3,7 @@ import { Avatar, type Emotion } from './avatar';
 import { VoiceSession, type ServerEvent } from './voice';
 
 // Where the session server lives. Empty in production builds until a backend is deployed.
-const API = (import.meta.env.VITE_API_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://localhost:8787' : '');
+const API = (import.meta.env.VITE_API_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://127.0.0.1:8787' : '');
 
 const $ = <T extends HTMLElement>(id: string) => document.getElementById(id) as T;
 const note = $('note'), captions = $('captions'), you = $('you'), her = $('her');

@@ -8,6 +8,12 @@ import { personaList } from './src/personas.js';
 const PORT = Number(process.env.PORT || 8787);
 const ALLOWED = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:4173').split(',');
 const env = process.env;
+// Local-only unless a host is given on purpose. Before this is exposed publicly it also needs
+// a real access gate (signed session tokens); the origin check below only stops other websites.
+const HOST = process.env.HOST || '127.0.0.1';
+const MAX_SESSIONS_PER_IP = 2;
+const sessionsByIp = new Map();
+const voiceCache = new Map(); // search term -> { at, body }
 
 /** Wrap a `ws` socket in the small shape session.js expects. */
 function wrap(ws) {
@@ -37,17 +43,23 @@ const server = http.createServer(async (req, res) => {
 
   // Search Fish Audio's public voice library.
   if (url.pathname === '/voices') {
+    if (!origin || !ALLOWED.includes(origin)) return json(403, { error: 'forbidden' });
     const q = new URLSearchParams({ page_size: '24', sort_by: 'task_count', language: 'en' });
     const term = (url.searchParams.get('q') || '').slice(0, 60);
     if (term) q.set('title', term);
+    const hit = voiceCache.get(term);
+    if (hit && Date.now() - hit.at < 10 * 60 * 1000) return json(200, hit.body);
     try {
       const r = await fetch('https://api.fish.audio/model?' + q, { headers: { Authorization: 'Bearer ' + env.FISH_API_KEY } });
       if (!r.ok) return json(502, { error: `voice library returned ${r.status}` });
       const { items = [] } = await r.json();
-      return json(200, items.map((v) => ({
+      const body = items.map((v) => ({
         id: v._id, title: v.title, tags: v.tags, uses: v.task_count, cover: v.cover_image,
         sample: v.samples?.[0]?.audio, author: v.author?.nickname,
-      })));
+      }));
+      if (voiceCache.size > 200) voiceCache.clear();
+      voiceCache.set(term, { at: Date.now(), body });
+      return json(200, body);
     } catch (e) {
       return json(502, { error: 'voice library unreachable' });
     }
@@ -58,10 +70,14 @@ const server = http.createServer(async (req, res) => {
 const wss = new WebSocketServer({ noServer: true });
 server.on('upgrade', (req, socket, head) => {
   const origin = req.headers.origin;
-  if (new URL(req.url, 'http://x').pathname !== '/session' || (origin && !ALLOWED.includes(origin))) return socket.destroy();
+  if (new URL(req.url, 'http://x').pathname !== '/session' || !origin || !ALLOWED.includes(origin)) return socket.destroy();
+  const ip = req.socket.remoteAddress || '?';
+  if ((sessionsByIp.get(ip) || 0) >= MAX_SESSIONS_PER_IP) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => {
+    sessionsByIp.set(ip, (sessionsByIp.get(ip) || 0) + 1);
+    ws.on('close', () => sessionsByIp.set(ip, Math.max(0, (sessionsByIp.get(ip) || 1) - 1)));
     startSession({ client: wrap(ws), openUpstream, env, log: (...a) => console.log(new Date().toISOString().slice(11, 23), ...a) });
   });
 });
 
-server.listen(PORT, () => console.log(`session server on http://localhost:${PORT}`));
+server.listen(PORT, HOST, () => console.log(`session server on http://localhost:${PORT}`));

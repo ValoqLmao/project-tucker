@@ -13,7 +13,7 @@ function fishPcm16k(text) {
   });
 }
 
-const ws = new WebSocket('ws://localhost:8787/session');
+const ws = new WebSocket('ws://127.0.0.1:8787/session', { origin: 'http://localhost:5173' });
 let t0 = 0, audio = 0, firstAudio = 0, text = '';
 ws.on('message', (d, bin) => {
   if (bin) { if (!firstAudio) { firstAudio = Date.now() - t0; console.log(`  first audio ${firstAudio} ms after end of input`); } audio += d.length; return; }
