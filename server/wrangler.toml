@@ -7,7 +7,7 @@ routes = [{ pattern = "tucker-api.valoq.dev", custom_domain = true }]
 
 [vars]
 # The site(s) allowed to use this server, comma separated, no trailing slash.
-ALLOWED_ORIGINS = "https://tucker.valoq.dev"
+ALLOWED_ORIGINS = "https://tucker.valoq.dev,https://project-tucker.pages.dev"
 
 [[durable_objects.bindings]]
 name = "SESSION"
