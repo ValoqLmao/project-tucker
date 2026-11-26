@@ -2,7 +2,7 @@
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
   "phase": "Making her feel alive",
-  "focus": "Lip sync now forms real vowel shapes from the voice, every reply carries a mood that drives her face, and she has body language for listening and speaking. Searching for a properly licensed anime character model to replace the placeholder.",
+  "focus": "She now moves with motion-captured idle and talking animations, with live eye movement, blinking, mood and voice-driven head motion layered on top. Looking for a better character model next.",
   "appUrl": "app/",
   "milestones": [
     {

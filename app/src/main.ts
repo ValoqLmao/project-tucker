@@ -43,9 +43,10 @@ const picker = setupVoicePicker({
   onChange: (voice) => session?.configure(personaSel.value, voice),
 });
 $('voiceBtn').onclick = () => picker.open();
-const BASELINE: Record<string, [Emotion, number]> = { sweet: ['happy', 0.3], roast: ['angry', 0.18], mommy: ['relaxed', 0.45], spicy: ['relaxed', 0.35] };
+const BASELINE: Record<string, [Emotion, number]> = { sweet: ['happy', 0.16], roast: ['angry', 0.14], mommy: ['relaxed', 0.22], spicy: ['relaxed', 0.18] };
 const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['relaxed', 0.25]));
 let userTalking = false;
+const focus = new THREE.Vector3(0, 1.4, 0); // smoothed head position the camera frames
 
 async function loadAvatar() {
   try {
@@ -62,7 +63,12 @@ async function loadAvatar() {
   camera.position.set(0, head.y - 0.04, head.z + 1.9);
   camera.lookAt(0, head.y - 0.1, head.z);
   avatar.lookTarget.position.copy(camera.position);
+  focus.copy(head);
   applyBaseline();
+  // Motion clips. The richer set lives in public/local (not published); the bundled loop is the fallback.
+  const base = import.meta.env.BASE_URL;
+  const local = ['idle', 'idle_2', 'idle_3', 'idle_4', 'idle_5'].map((n) => `${base}local/animations/${n}.vrma`);
+  avatar.loadAnimations(local, `${base}local/animations/talking.vrma`).then((n) => n || avatar!.loadAnimations([`${base}animations/idle_loop.vrma`]));
   note.textContent = API ? '' : 'Preview build: the avatar is live, voice chat is not connected on this page yet.';
 }
 
@@ -129,13 +135,19 @@ form.onsubmit = async (ev) => {
 
 personaSel.onchange = () => { applyBaseline(); session?.configure(personaSel.value, picker.choices[personaSel.value] ?? null); her.textContent = ''; you.textContent = ''; };
 
-const clock = new THREE.Clock();
+const timer = new THREE.Timer();
 renderer.setAnimationLoop(() => {
-  const dt = Math.min(clock.getDelta(), 0.1);
+  timer.update();
+  const dt = Math.min(timer.getDelta(), 0.1);
   if (avatar) {
     avatar.setVisemes(session?.visemes() ?? { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 });
     avatar.setActivity(session?.speaking ? 'speaking' : userTalking ? 'listening' : 'idle');
     avatar.update(dt, camera);
+    // The clips move her around a little; the camera follows her head loosely so she stays framed.
+    const head = avatar.headPosition;
+    focus.lerp(head, 1 - Math.exp(-dt * 2.5));
+    camera.position.set(focus.x * 0.85, focus.y - 0.04, focus.z + 1.9);
+    camera.lookAt(focus.x, focus.y - 0.1, focus.z);
   }
   renderer.render(scene, camera);
 });

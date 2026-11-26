@@ -9,6 +9,7 @@
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.6.0",
+    "@pixiv/three-vrm-animation": "^3.6.0",
     "three": "^0.187.0",
     "wlipsync": "^1.3.1"
   },
