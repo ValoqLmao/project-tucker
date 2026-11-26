@@ -57,6 +57,10 @@ const focus = new THREE.Vector3(0, 1.4, 0); // smoothed head position the camera
 
 const BASE = import.meta.env.BASE_URL;
 const PLACEHOLDER = `${BASE}models/placeholder.vrm`;
+// Characters and motion clips that are not part of the public build: a local folder while
+// developing, the server's access-code-protected store once hosted.
+const HOSTED = !import.meta.env.DEV && !!API;
+const extra = (path: string) => (HOSTED ? `${API}/assets/${path}?t=${encodeURIComponent(token)}` : `${BASE}local/${path}`);
 const modelSel = $<HTMLSelectElement>('model');
 let loading = 0;
 
@@ -82,7 +86,7 @@ async function loadAvatar(url: string) {
   applyBaseline();
   // Motion clips. The richer set lives in public/local (not published); the bundled loop is the fallback.
   // Only the calm loops: the livelier ones swing the arms and turn the head far more than a person in conversation does.
-  const local = ['idle_5', 'idle'].map((n) => `${BASE}local/animations/${n}.vrma`);
+  const local = ['idle_5', 'idle'].map((n) => extra(`animations/${n}.vrma`));
   const a = avatar;
   a.loadAnimations(local).then((n) => n || a.loadAnimations([`${BASE}animations/idle_loop.vrma`]));
   note.textContent = API ? '' : 'Preview build: the avatar is live, voice chat is not connected on this page yet.';
@@ -92,11 +96,12 @@ async function loadAvatar(url: string) {
 async function setupModels() {
   let files: string[] = [];
   try {
-    const r = await fetch(`${BASE}local/models/index.json`);
+    const r = await fetch(extra('models/index.json').replace('/assets/models/index.json', '/assets/index.json'));
     if (r.ok && (r.headers.get('content-type') || '').includes('json')) files = await r.json();
   } catch {}
   const pretty = (f: string) => f.replace(/.vrm$/i, '').replace(/[_-]+/g, ' ').replace(/w/g, (c) => c.toUpperCase());
-  modelSel.replaceChildren(new Option('Placeholder', PLACEHOLDER), ...files.map((f) => new Option(pretty(f), `${BASE}local/models/${encodeURIComponent(f)}`)));
+  const urlOf = (v: string) => (v === PLACEHOLDER ? v : extra(`models/${encodeURIComponent(v)}`));
+  modelSel.replaceChildren(new Option('Placeholder', PLACEHOLDER), ...files.map((f) => new Option(pretty(f), f)));
   modelSel.hidden = files.length === 0;
   let saved: string | null = null;
   try { saved = localStorage.getItem('tucker.model'); } catch {}
@@ -104,9 +109,9 @@ async function setupModels() {
   else if (files.length) modelSel.selectedIndex = 1;
   modelSel.onchange = () => {
     try { localStorage.setItem('tucker.model', modelSel.value); } catch {}
-    loadAvatar(modelSel.value).catch(() => {});
+    loadAvatar(urlOf(modelSel.value)).catch(() => {});
   };
-  await loadAvatar(modelSel.value);
+  await loadAvatar(urlOf(modelSel.value));
 }
 
 /**
@@ -233,8 +238,7 @@ renderer.setAnimationLoop(() => {
   stage.render(dt);
 });
 
-setupModels();
-enter().then(loadPersonas);
+enter().then(() => { setupModels(); loadPersonas(); });
 
 // Scene picker
 const sceneSel = $<HTMLSelectElement>('scene');

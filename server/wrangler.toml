@@ -13,6 +13,11 @@ ALLOWED_ORIGINS = "https://tucker.valoq.dev,https://project-tucker.pages.dev"
 name = "SESSION"
 class_name = "Session"
 
+# Large files (character models, animation clips), served only to visitors with the access code.
+[[r2_buckets]]
+binding = "ASSETS"
+bucket_name = "tucker-assets"
+
 [[migrations]]
 tag = "v1"
 new_sqlite_classes = ["Session"]

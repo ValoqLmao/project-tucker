@@ -22,7 +22,7 @@ export default {
     if (!origin || !allowed.includes(origin)) return json({ error: 'forbidden' }, 403);
     const cors = { 'access-control-allow-origin': origin, vary: 'origin' };
     if (req.method === 'OPTIONS') {
-      return new Response(null, { status: 204, headers: { ...cors, 'access-control-allow-methods': 'GET,POST', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '86400' } });
+      return new Response(null, { status: 204, headers: { ...cors, 'access-control-allow-methods': 'GET,HEAD,POST', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '86400' } });
     }
 
     // A public deployment without a gate lets anyone spend the owner's API credit, so that has to be asked for.
@@ -41,6 +41,29 @@ export default {
     }
 
     if (url.pathname === '/personas') return json(personaList(), 200, cors);
+
+    // Character models and animation clips live in R2 (they are far too big for Pages) and are
+    // only handed to visitors who have entered the access code.
+    if (url.pathname.startsWith('/assets/')) {
+      if (!env.ASSETS) return json({ error: 'no asset store configured' }, 404, cors);
+      if (!(await authed())) return json({ error: 'unauthorized' }, 401, cors);
+      let key = '';
+      try { key = decodeURIComponent(url.pathname.slice('/assets/'.length)); } catch {}
+      if (key === 'index.json') {
+        const list = await env.ASSETS.list({ prefix: 'models/', limit: 200 });
+        const models = list.objects.map((o) => o.key.slice('models/'.length)).filter((n) => /\.vrm$/i.test(n)).sort();
+        return json(models, 200, { ...cors, 'cache-control': 'private, max-age=60' });
+      }
+      if (!/^(models|animations)\/[\w .()-]+\.(vrm|vrma)$/i.test(key)) return json({ error: 'not found' }, 404, cors);
+      const headers = { ...cors, 'content-type': 'application/octet-stream', 'cache-control': 'private, max-age=604800' };
+      if (req.method === 'HEAD') {
+        const head = await env.ASSETS.head(key);
+        return head ? new Response(null, { status: 200, headers: { ...headers, 'content-length': String(head.size) } }) : json({ error: 'not found' }, 404, cors);
+      }
+      const obj = await env.ASSETS.get(key);
+      if (!obj) return json({ error: 'not found' }, 404, cors);
+      return new Response(obj.body, { status: 200, headers: { ...headers, 'content-length': String(obj.size), etag: obj.httpEtag } });
+    }
 
     if (url.pathname === '/voices') {
       if (!(await authed())) return json({ error: 'unauthorized' }, 401, cors);
