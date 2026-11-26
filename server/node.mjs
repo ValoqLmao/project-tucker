@@ -4,6 +4,7 @@ import http from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
 import { startSession } from './src/session.js';
 import { personaList } from './src/personas.js';
+import { FISH_OFFICIAL, usableVoice, publicVoice } from './src/voices.js';
 
 const PORT = Number(process.env.PORT || 8787);
 const ALLOWED = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:4173').split(',');
@@ -41,22 +42,19 @@ const server = http.createServer(async (req, res) => {
 
   if (url.pathname === '/personas') return json(200, personaList());
 
-  // Search Fish Audio's public voice library.
+  // Voices. With no search term: Fish Audio's own designed voices. With one: the community library.
   if (url.pathname === '/voices') {
     if (!origin || !ALLOWED.includes(origin)) return json(403, { error: 'forbidden' });
-    const q = new URLSearchParams({ page_size: '24', sort_by: 'task_count', language: 'en' });
-    const term = (url.searchParams.get('q') || '').slice(0, 60);
-    if (term) q.set('title', term);
+    const term = (url.searchParams.get('q') || '').trim().slice(0, 60);
     const hit = voiceCache.get(term);
     if (hit && Date.now() - hit.at < 10 * 60 * 1000) return json(200, hit.body);
+    const q = new URLSearchParams({ page_size: '100', sort_by: 'task_count', language: 'en' });
+    if (term) { q.set('title', term); q.set('page_size', '40'); } else q.set('author_id', FISH_OFFICIAL);
     try {
       const r = await fetch('https://api.fish.audio/model?' + q, { headers: { Authorization: 'Bearer ' + env.FISH_API_KEY } });
       if (!r.ok) return json(502, { error: `voice library returned ${r.status}` });
       const { items = [] } = await r.json();
-      const body = items.map((v) => ({
-        id: v._id, title: v.title, tags: v.tags, uses: v.task_count, cover: v.cover_image,
-        sample: v.samples?.[0]?.audio, author: v.author?.nickname,
-      }));
+      const body = items.filter(usableVoice).filter((v) => term || v.tags?.includes('female')).map(publicVoice);
       if (voiceCache.size > 200) voiceCache.clear();
       voiceCache.set(term, { at: Date.now(), body });
       return json(200, body);

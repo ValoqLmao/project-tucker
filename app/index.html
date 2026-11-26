@@ -21,7 +21,23 @@
   #talk[aria-pressed="true"] { background: #262231; color: #ff7ab8; }
   #say { display: flex; gap: 8px; flex: 1 1 260px; }
   #text { flex: 1; }
-  #persona { flex: 1 1 100%; }
+  #persona { flex: 1 1 60%; }
+  dialog { background: #17151d; color: inherit; border: 1px solid #3a3548; border-radius: 16px; padding: 18px; width: min(620px, calc(100vw - 32px)); max-height: min(80vh, 720px); box-sizing: border-box; }
+  dialog[open] { display: flex; flex-direction: column; gap: 10px; }
+  dialog::backdrop { background: #000a; }
+  dialog h2 { margin: 0; font-size: 18px; }
+  .vsearch { display: flex; gap: 8px; } .vsearch input { flex: 1; }
+  .vhint { margin: 0; color: #9a94a8; font-size: 13px; }
+  .vlist { overflow-y: auto; display: grid; gap: 8px; min-height: 120px; padding-right: 4px; }
+  .vrow { display: flex; gap: 10px; align-items: center; border: 1px solid #2a2733; border-radius: 12px; padding: 10px 12px; }
+  .vrow.on { border-color: #ff7ab8; background: #ff7ab812; }
+  .vinfo { flex: 1; min-width: 0; }
+  .vname { font-weight: 600; overflow-wrap: anywhere; }
+  .vbadge { margin-left: 8px; font-size: 11px; font-weight: 500; color: #8fd3ff; border: 1px solid #8fd3ff66; border-radius: 99px; padding: 1px 7px; }
+  .vtags, .vabout { color: #9a94a8; font-size: 12px; overflow-wrap: anywhere; }
+  .vact { display: flex; flex-direction: column; gap: 6px; } .vact button { padding: 5px 12px; font-size: 13px; white-space: nowrap; }
+  .vrow.on .vuse { background: #ff7ab8; color: #14121b; border-color: #ff7ab8; }
+  .vfoot { display: flex; justify-content: space-between; gap: 8px; }
 </style>
 </head>
 <body>
@@ -30,10 +46,12 @@
   <div id="captions" hidden><div id="you"></div><div id="her"></div></div>
   <div id="controls">
     <select id="persona" aria-label="Personality"></select>
+    <button id="voiceBtn" type="button">Voice</button>
     <button id="talk" aria-pressed="false">Start talking</button>
     <form id="say"><input id="text" placeholder="or type to her…" autocomplete="off" aria-label="Message"><button>Send</button></form>
   </div>
 </div>
+<dialog id="voices"></dialog>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

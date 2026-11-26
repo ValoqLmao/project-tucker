@@ -1,6 +1,7 @@
 import * as THREE from 'three';
 import { Avatar, type Emotion } from './avatar';
 import { VoiceSession, type ServerEvent } from './voice';
+import { setupVoicePicker } from './voicePicker';
 
 // Where the session server lives. Empty in production builds until a backend is deployed.
 const API = (import.meta.env.VITE_API_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://127.0.0.1:8787' : '');
@@ -32,6 +33,16 @@ resize();
 
 let avatar: Avatar | null = null;
 let session: VoiceSession | null = null;
+type Persona = { id: string; name: string; blurb: string; voice?: string };
+let personas: Persona[] = [];
+const persona = () => personas.find((p) => p.id === personaSel.value) ?? { id: personaSel.value, name: 'Her' };
+const picker = setupVoicePicker({
+  api: API,
+  dialog: $<HTMLDialogElement>('voices'),
+  persona,
+  onChange: (voice) => session?.configure(personaSel.value, voice),
+});
+$('voiceBtn').onclick = () => picker.open();
 let calmDown = 0; // seconds until her face relaxes back to neutral
 
 async function loadAvatar() {
@@ -55,7 +66,7 @@ async function loadAvatar() {
 async function loadPersonas() {
   if (!API) return;
   try {
-    const list: { id: string; name: string; blurb: string }[] = await (await fetch(`${API}/personas`)).json();
+    const list: Persona[] = (personas = await (await fetch(`${API}/personas`)).json());
     personaSel.replaceChildren(...list.map((p) => new Option(`${p.name} — ${p.blurb}`, p.id)));
     document.body.classList.add('connected');
   } catch {
@@ -82,7 +93,7 @@ async function ensureSession(): Promise<VoiceSession> {
   s.onEvent = onEvent;
   s.onClose = () => { session = null; talk.setAttribute('aria-pressed', 'false'); talk.textContent = 'Start talking'; };
   await s.connect();
-  s.configure(personaSel.value);
+  s.configure(personaSel.value, picker.choices[personaSel.value] ?? null);
   note.textContent = '';
   return (session = s);
 }
@@ -112,7 +123,7 @@ form.onsubmit = async (ev) => {
   }
 };
 
-personaSel.onchange = () => { session?.configure(personaSel.value); her.textContent = ''; you.textContent = ''; };
+personaSel.onchange = () => { session?.configure(personaSel.value, picker.choices[personaSel.value] ?? null); her.textContent = ''; you.textContent = ''; };
 
 const clock = new THREE.Clock();
 renderer.setAnimationLoop(() => {

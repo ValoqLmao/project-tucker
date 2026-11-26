@@ -165,7 +165,7 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
       tts.onclose = () => finish(r);
       tts.send(encode({
         event: 'start',
-        request: { text: '', format: 'pcm', sample_rate: TTS_SAMPLE_RATE, latency: 'balanced', chunk_length: 100, ...(voice ? { reference_id: voice } : {}) },
+        request: { text: '', format: 'pcm', sample_rate: TTS_SAMPLE_RATE, latency: 'balanced', chunk_length: 100, ...(voice || persona.voice ? { reference_id: voice || persona.voice } : {}) },
       }));
       return tts;
     });
@@ -234,7 +234,7 @@ export function startSession({ client, openUpstream, env, log = () => {} }) {
     let m;
     try { m = JSON.parse(data.toString()); } catch { return; }
     if (m.type === 'config') {
-      if (PERSONAS[m.persona] && PERSONAS[m.persona] !== persona) { persona = PERSONAS[m.persona]; history.length = 0; interrupt(); }
+      if (PERSONAS[m.persona] && PERSONAS[m.persona] !== persona) { persona = PERSONAS[m.persona]; history.length = 0; voice = null; interrupt(); }
       if (typeof m.voice === 'string' && /^[a-f0-9]{16,64}$/i.test(m.voice)) voice = m.voice;
       else if (m.voice === null) voice = null;
     } else if (m.type === 'text' && typeof m.text === 'string' && m.text.trim()) {
