@@ -1,0 +1,16 @@
+{
+  "project": "Project Tucker",
+  "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
+  "phase": "Research",
+  "focus": "Researching open-source bases (VRM avatar apps) and the voice / LLM / speech-to-text providers before writing product code.",
+  "appUrl": "",
+  "milestones": [
+    { "name": "Public build tracker online", "state": "doing" },
+    { "name": "Research: open-source base to fork", "state": "doing" },
+    { "name": "Research: voice, LLM and speech-to-text stack", "state": "doing" },
+    { "name": "Avatar on screen: custom VRM, blinking, idle motion", "state": "todo" },
+    { "name": "Voice loop: mic in, streamed reply, lip sync", "state": "todo" },
+    { "name": "Personas and expressions", "state": "todo" },
+    { "name": "Deploy on free hosting + custom domain", "state": "todo" }
+  ]
+}
