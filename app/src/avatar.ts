@@ -3,11 +3,11 @@ import { GLTFLoader } from 'three/addons/loaders/GLTFLoader.js';
 import { VRM, VRMLoaderPlugin, VRMUtils, type VRMHumanBoneName } from '@pixiv/three-vrm';
 import { VRMAnimationLoaderPlugin, VRMLookAtQuaternionProxy, createVRMAnimationClip, type VRMAnimation } from '@pixiv/three-vrm-animation';
 
-export type Emotion = 'neutral' | 'happy' | 'angry' | 'sad' | 'relaxed' | 'surprised';
-export type Visemes = { aa: number; ih: number; ou: number; ee: number; oh: number };
-export type Activity = 'idle' | 'listening' | 'speaking';
+import { FaceRig } from './face';
 
-const EMOTIONS = ['happy', 'angry', 'sad', 'relaxed', 'surprised'] as const;
+export type Visemes = { aa: number; ih: number; ou: number; ee: number; oh: number };
+export type Activity = 'idle' | 'listening' | 'thinking' | 'speaking';
+
 const VOWELS = ['aa', 'ih', 'ou', 'ee', 'oh'] as const;
 const FINGERS = ['Index', 'Middle', 'Ring', 'Little'] as const;
 const damp = (cur: number, target: number, rate: number, dt: number) => cur + (target - cur) * (1 - Math.exp(-rate * dt));
@@ -43,11 +43,8 @@ export class Avatar {
   private saccade = new THREE.Vector3();
   private saccadeIn = 0.5;
 
-  private emotion: Emotion = 'neutral';
-  private intensity = 0;
-  private emotionHold = 0;
-  private baseline: { emotion: Emotion; weight: number } = { emotion: 'relaxed', weight: 0.15 };
-  private weights: Record<string, number> = {};
+  readonly face: FaceRig;
+  private headFollow = 0; // smoothed sideways turn of the head toward where the eyes went
 
   private mouth: Visemes = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
   private mouthTarget: Visemes = { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 };
@@ -65,9 +62,7 @@ export class Avatar {
   private sinceNod = 9;
   private loudAvg = 0;
   private wasSpeaking = false;
-  private brow = 0; // 1 -> 0 eyebrow flash
   private averted = false;
-  private emotionAge = 0;
 
   // Clip playback
   private mixer: THREE.AnimationMixer;
@@ -85,6 +80,7 @@ export class Avatar {
       vrm.scene.add(proxy);
     }
     this.mixer = new THREE.AnimationMixer(vrm.scene);
+    this.face = new FaceRig(vrm);
   }
 
   static async load(url: string, onProgress?: (fraction: number) => void): Promise<Avatar> {
@@ -147,21 +143,26 @@ export class Avatar {
   }
 
   /** The face she wears when nothing in particular is happening. */
-  setBaseline(emotion: Emotion, weight: number) { this.baseline = { emotion, weight }; }
+  setBaseline(expression: string, strength: number) { this.face.setResting(expression, strength); }
 
-  /** Flash an emotion; it fades back to the baseline `hold` seconds after she stops speaking. */
-  setEmotion(e: Emotion, intensity = 0.4, hold = 3) {
-    this.emotion = e;
-    this.intensity = e === 'neutral' ? 0 : intensity;
-    this.emotionHold = hold;
-    this.emotionAge = 0;
-    if (e === 'surprised') this.blinkIn = 0.7; // wide eyes first, then a blink
+  /** React with a named expression (see EXPRESSIONS in face.ts). */
+  setEmotion(expression: string, strength = 0.6) {
+    this.face.show(expression, strength);
+    if (expression === 'surprised') this.blinkIn = 0.7; // wide eyes first, then a blink
   }
 
   setActivity(a: Activity) {
     if (a === this.activity) return;
     if (this.activity === 'listening') this.startNod(0.06, 0.45); // small "got it" nod when they finish
-    if (a !== 'speaking') { this.averted = false; this.glance.set(0, 0, 0); this.glanceIn = 2 + Math.random() * 3; } // back to eye contact
+    if (a === 'idle' || a === 'listening') { this.averted = false; this.glance.set(0, 0, 0); this.glanceIn = 2 + Math.random() * 3; } // back to eye contact
+    if (a === 'listening') this.face.show('attentive', 0.8, 30);
+    if (a === 'thinking') {
+      // Looking up and away for a moment is how people show they are working out an answer.
+      this.face.show('thinking', 0.7, 6);
+      this.averted = true;
+      this.glance.set((Math.random() < 0.5 ? -1 : 1) * 0.3, 0.16, 0);
+      this.glanceIn = 1.2 + Math.random() * 0.8;
+    }
     this.activity = a;
   }
 
@@ -223,7 +224,7 @@ export class Avatar {
       else if (this.sinceNod > 1 && loud > 0.35 && loud > this.loudAvg * 1.3) {
         if (Math.random() < 0.5) {
           this.startNod(0.035 + Math.random() * 0.035, 0.25 + Math.random() * 0.15);
-          if (loud > 0.6 && Math.random() < 0.4) this.brow = 1; // eyebrow flash on the strongest stresses
+          if (loud > 0.5 && Math.random() < 0.5) this.face.flashBrows(); // eyebrows lift on the strongest stresses
         } else this.sinceNod = 0.5;
       }
     }
@@ -249,7 +250,9 @@ export class Avatar {
       this.faceViewer(camera, 0.75); // clips turn her head wherever they like; she should be talking to you
     }
     // Slow drift of a degree or two, plus the nods. Sideways gaze shifts bring the head along a little.
-    const follow = this.glance.x * 0.35;
+    // The head trails the eyes, easing over about half a second. (Following them directly made it snap.)
+    this.headFollow = damp(this.headFollow, this.glance.x * 0.3, 3.5, dt);
+    const follow = this.headFollow;
     add('neck', f * (li * 0.02 + nodding * 0.35), wander(t * 0.25, 4) * 0.015 + follow * 0.4, f * li * 0.02);
     add(
       'head',
@@ -292,30 +295,11 @@ export class Avatar {
     const want = camera.getWorldPosition(new THREE.Vector3()).add(this.glance).add(this.saccade);
     this.lookTarget.position.lerp(want, 1 - Math.exp(-dt * 24)); // eyes jump, they do not pan
 
-    if (!ex) return this.vrm.update(Math.min(dt, 1 / 30));
+    if (!ex) { this.vrm.update(Math.min(dt, 1 / 30)); return this.face.update(dt, this.activity === 'speaking', en); }
 
     // --- face ---------------------------------------------------------------
-    // A mood is a flash, not a mask: it holds while she is saying the line (8 s at most), lingers
-    // briefly, then gives way to her resting face. Only one preset leads at a time.
-    this.emotionAge += dt;
-    if (this.intensity > 0) {
-      if (this.activity !== 'speaking') this.emotionHold -= dt;
-      if (this.emotionHold <= 0 || this.emotionAge > 8) this.intensity = 0;
-    }
-    this.brow = Math.max(0, this.brow - dt / 0.3);
-    let lead = 0, eyeClosing = 0;
-    for (const e of EMOTIONS) {
-      let target = this.emotion === e ? this.intensity : 0;
-      if (this.baseline.emotion === e) target = Math.max(target, this.baseline.weight * (this.intensity > 0.2 && this.emotion !== e ? 0 : 1));
-      if (e === 'happy') target = Math.min(0.6, Math.max(target, li * 0.06)); // full "happy" is a closed-eye grin
-      if (e === 'surprised') target = Math.max(target, this.brow * 0.13);
-      // Rise quickly, fall slowly.
-      const cur = this.weights[e] ?? 0;
-      const w = (this.weights[e] = damp(cur, Math.max(0, target), target > cur ? 6 : 1.6, dt));
-      ex.setValue(e, w);
-      lead = Math.max(lead, w);
-      if (e === 'happy' || e === 'relaxed') eyeClosing = Math.max(eyeClosing, w);
-    }
+    // Expressions live in FaceRig; here it is only asked how much room they leave.
+    const eyeClosing = this.face.eyesNarrowed;
 
     // Blinking: fast close, slower open; about 15 a minute at rest and more while talking,
     // with the occasional double blink. Skipped while a smile is already narrowing the eyes.
@@ -335,7 +319,7 @@ export class Avatar {
     ex.setValue('blink', blink * (1 - eyeClosing));
 
     // Mouth shapes give way when an expression already owns the mouth.
-    const room = lead > 0.3 ? 0.5 : 0.8;
+    const room = 0.85 - 0.4 * this.face.mouthBusy;
     for (const v of VOWELS) {
       const target = this.mouthTarget[v];
       this.mouth[v] = damp(this.mouth[v], target, target > this.mouth[v] ? 24 : 13, dt);
@@ -343,6 +327,7 @@ export class Avatar {
     }
 
     this.vrm.update(Math.min(dt, 1 / 30)); // hair and cloth springs misbehave on long frames
+    this.face.update(dt, this.activity === 'speaking', en); // after vrm.update, which resets preset-owned morphs
   }
 
   private get fingersAnimated() { return [...this.animated].some((n) => /Index/i.test(n)); }

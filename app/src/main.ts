@@ -1,5 +1,5 @@
 import * as THREE from 'three';
-import { Avatar, type Emotion } from './avatar';
+import { Avatar } from './avatar';
 import { VoiceSession, type ServerEvent } from './voice';
 import { setupVoicePicker } from './voicePicker';
 
@@ -43,9 +43,10 @@ const picker = setupVoicePicker({
   onChange: (voice) => session?.configure(personaSel.value, voice),
 });
 $('voiceBtn').onclick = () => picker.open();
-const BASELINE: Record<string, [Emotion, number]> = { sweet: ['happy', 0.07], roast: ['angry', 0.08], mommy: ['relaxed', 0.12], spicy: ['relaxed', 0.1], goblin: ['angry', 0.06] };
-const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['relaxed', 0.25]));
+const BASELINE: Record<string, [string, number]> = { sweet: ['warm', 0.45], roast: ['smug', 0.3], mommy: ['soft', 0.6], spicy: ['flirty', 0.4], goblin: ['smug', 0.35] };
+const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['soft', 0.3]));
 let userTalking = false;
+let thinking = false; // between the end of their turn and the first sound of her reply
 const focus = new THREE.Vector3(0, 1.4, 0); // smoothed head position the camera frames
 
 const BASE = import.meta.env.BASE_URL;
@@ -68,7 +69,7 @@ async function loadAvatar(url: string) {
   scene.add(avatar.vrm.scene, avatar.lookTarget);
   avatar.vrm.scene.updateMatrixWorld(true);
   const head = avatar.headPosition;
-  camera.position.set(0, head.y - 0.04, head.z + 1.9);
+  camera.position.set(0, head.y - 0.04, head.z + 1.5);
   camera.lookAt(0, head.y - 0.1, head.z);
   avatar.lookTarget.position.copy(camera.position);
   focus.copy(head);
@@ -118,11 +119,12 @@ function onEvent(e: ServerEvent) {
   switch (e.type) {
     case 'user_start': you.textContent = '…'; userTalking = true; break;
     case 'user_partial':
-    case 'user_final': you.textContent = e.text; userTalking = e.type === 'user_partial'; break;
+    case 'user_final': you.textContent = e.text; userTalking = e.type === 'user_partial'; if (e.type === 'user_final') thinking = true; break;
     case 'reply_start': her.textContent = ''; break;
     case 'reply_text': her.textContent = (her.textContent + e.delta).replace(/\[[a-z ,']+\]\s*|["“”*]/gi, ''); break;
-    case 'emotion': avatar?.setEmotion(e.value as Emotion, e.strength ?? 0.4); break;
-    case 'error': note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;
+    case 'emotion': avatar?.setEmotion(e.value, e.strength ?? 0.6); break;
+    case 'reply_end': case 'interrupt': thinking = false; break;
+    case 'error': thinking = false; note.textContent = `Something went wrong (${e.where}): ${e.message}`; break;
   }
   captions.hidden = false;
 }
@@ -171,14 +173,15 @@ renderer.setAnimationLoop(() => {
   const dt = Math.min(timer.getDelta(), 0.1);
   if (avatar) {
     avatar.setVisemes(session?.visemes() ?? { aa: 0, ih: 0, ou: 0, ee: 0, oh: 0 });
-    avatar.setActivity(session?.speaking ? 'speaking' : userTalking ? 'listening' : 'idle');
+    if (session?.speaking) thinking = false;
+    avatar.setActivity(session?.speaking ? 'speaking' : userTalking ? 'listening' : thinking ? 'thinking' : 'idle');
     avatar.update(dt, camera);
     // The clips move her around a little; the camera follows her head loosely so she stays framed.
     const head = avatar.headPosition;
     focus.lerp(head, 1 - Math.exp(-dt * 2.5));
     // A camera on a tripod looks dead; a centimetre of slow drift does not.
     const ct = timer.getElapsed();
-    camera.position.set(focus.x * 0.85 + Math.sin(ct * 0.31) * 0.012, focus.y - 0.02 + Math.sin(ct * 0.23) * 0.008, focus.z + 1.9);
+    camera.position.set(focus.x * 0.85 + Math.sin(ct * 0.31) * 0.012, focus.y - 0.02 + Math.sin(ct * 0.23) * 0.008, focus.z + 1.5);
     camera.lookAt(focus.x, focus.y - 0.1, focus.z);
   }
   renderer.render(scene, camera);

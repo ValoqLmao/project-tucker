@@ -1,8 +1,8 @@
 {
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
-  "phase": "Making her feel alive",
-  "focus": "Motion now follows conversational-behaviour research: nods on stressed syllables, eye contact with short looks away, natural blink rates, moods that flash and fade. A character switcher lets the local build swap models.",
+  "phase": "Facial expression",
+  "focus": "New face layer: instead of five blunt presets, expressions are built from the model's individual brow, eyelid and mouth controls (teasing smirk, annoyed, shy, thinking, laughing and more), with peaks that settle and fade, small involuntary movements, and a thinking look while she works out a reply.",
   "appUrl": "app/",
   "milestones": [
     {

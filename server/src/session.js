@@ -22,31 +22,34 @@ const llmConfig = (env) => env.OPENROUTER_API_KEY
 export const TTS_SAMPLE_RATE = 24000;
 const MAX_TURNS = 40; // messages of history sent to the model
 
-// Voice cues the model may write -> the face the avatar should make.
-const CUE_EMOTION = {
-  laughing: 'happy', chuckling: 'happy', excited: 'happy', happy: 'happy', delighted: 'happy', proud: 'happy',
-  sad: 'sad', sobbing: 'sad', sighing: 'sad', disappointed: 'sad', worried: 'sad',
-  angry: 'angry', shouting: 'angry', frustrated: 'angry', sarcastic: 'angry', disdainful: 'angry',
-  surprised: 'surprised', gasping: 'surprised', confused: 'surprised',
-  whispering: 'relaxed', 'soft tone': 'relaxed', calm: 'relaxed', relaxed: 'relaxed',
-};
-
-// Models also invent their own cues ([smiling], [winking]), so fall back to keywords.
-const CUE_KEYWORDS = [
-  [/laugh|chuckl|giggl|smil|grin|cheer|excit|happy|delight|playful|teas|wink|proud|bright|amus/, 'happy'],
-  [/sad|sob|cry|sigh|disappoint|worr|lonely|pout|tired/, 'sad'],
-  [/angr|shout|scream|frustrat|sarcas|disdain|annoy|scoff|growl|mock|irritat|grump|grumbl|snark|bitter/, 'angry'],
-  [/surpris|gasp|shock|confus|curious/, 'surprised'],
-  [/whisper|soft|calm|relax|gentl|warm|purr|breath|sultry|husky/, 'relaxed'],
-  [/dry|deadpan|flat|neutral|matter/, 'neutral'],
+// Delivery cues the model writes -> the expression the avatar should make (names from the app's
+// face.ts) and how strongly. Models also invent cues, so this matches on keywords, first hit wins.
+const CUE_EXPRESSION = [
+  [/laugh|giggl|cackl|snort|crack/, 'laughing', 0.9],
+  [/chuckl|amus|grin/, 'happy', 0.7],
+  [/excit|thrill|eager|delight|cheer|bright/, 'excited', 0.75],
+  [/teas|playful|mischie|wink|cheeky/, 'teasing', 0.8],
+  [/smug|smirk|sarcas|mock|sly|snark|scoff|dry|wry/, 'smug', 0.75],
+  [/flirt|sultry|seduc|purr|husky|breath|whisper|low voice/, 'flirty', 0.75],
+  [/shy|blush|fluster|embarrass|bashful/, 'shy', 0.85],
+  [/curious|intrigu|interest|wonder/, 'curious', 0.7],
+  [/surpris|gasp|shock|startl|wide/, 'surprised', 0.85],
+  [/think|ponder|hmm|consider|hesitat/, 'thinking', 0.7],
+  [/concern|worr|gentle|sympath|tender|care/, 'concerned', 0.65],
+  [/sob|cry|sad|heartbr|lonely|melanch/, 'sad', 0.8],
+  [/sigh|tired|weary|resign|exasper/, 'sigh', 0.7],
+  [/pout|sulk|whin/, 'pout', 0.8],
+  [/annoy|irritat|grump|grumbl|bitter|unimpress|eye ?roll/, 'annoyed', 0.75],
+  [/angr|furious|shout|scream|rage|growl|snap/, 'angry', 0.85],
+  [/deadpan|flat|bored|monotone|blank/, 'deadpan', 0.7],
+  [/happy|smil|glad|proud|pleased/, 'happy', 0.6],
+  [/warm|fond|affection|loving|sweet/, 'warm', 0.7],
+  [/soft|calm|relax|sooth|quiet|content/, 'soft', 0.6],
 ];
-// How much of the face a cue should take over. Most cues are only a tint.
-const STRONG = /laugh|giggl|shout|scream|gasp|sob|cry|shock|furious|excit/;
-const FAINT = /calm|soft|dry|deadpan|flat|curious|teas|warm|gentl|neutral/;
 function emotionFor(cue) {
   const c = cue.toLowerCase();
-  const value = CUE_EMOTION[c] || CUE_KEYWORDS.find(([re]) => re.test(c))?.[1];
-  return value && { value, strength: STRONG.test(c) ? 0.65 : FAINT.test(c) ? 0.22 : 0.4 };
+  const hit = CUE_EXPRESSION.find(([re]) => re.test(c));
+  return hit && { value: hit[1], strength: hit[2] };
 }
 
 /**
