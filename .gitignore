@@ -9,3 +9,6 @@ dist/
 .claude/settings.local.json
 tracker/redact.local.json
 app/public/local/
+.dev.vars
+.wrangler/
+app/dist/

@@ -1,0 +1,22 @@
+name = "tucker-session"
+main = "worker.js"
+compatibility_date = "2026-10-01"
+
+# Serve the API on its own subdomain of your zone. Change if you want a different name.
+routes = [{ pattern = "tucker-api.valoq.dev", custom_domain = true }]
+
+[vars]
+# The site(s) allowed to use this server, comma separated, no trailing slash.
+ALLOWED_ORIGINS = "https://tucker.valoq.dev"
+
+[[durable_objects.bindings]]
+name = "SESSION"
+class_name = "Session"
+
+[[migrations]]
+tag = "v1"
+new_sqlite_classes = ["Session"]
+
+# Secrets are NOT stored here. Set each one with:  npx wrangler secret put NAME
+#   FISH_API_KEY, DEEPGRAM_API_KEY, OPENROUTER_API_KEY, ACCESS_CODE
+# Optional: TOKEN_SECRET (random string), LLM_MODEL, FISH_MODEL

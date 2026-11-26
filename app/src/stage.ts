@@ -4,14 +4,24 @@ import { RenderPass } from 'three/addons/postprocessing/RenderPass.js';
 import { UnrealBloomPass } from 'three/addons/postprocessing/UnrealBloomPass.js';
 import { OutputPass } from 'three/addons/postprocessing/OutputPass.js';
 
+/** Panoramic scenes she can stand in (CC0, from Poly Haven). `turn` picks which way the camera faces. */
+export const SCENES: Record<string, { label: string; file: string; turn: number }> = {
+  city: { label: 'City at night', file: 'shanghai_bund.jpg', turn: Math.PI / 2 },
+  fireplace: { label: 'Fireside', file: 'fireplace.jpg', turn: Math.PI * 1.5 },
+  lounge: { label: 'Lounge', file: 'lythwood_lounge.jpg', turn: 0 },
+};
+
 /** The backdrop behind her and the soft glow over the whole picture. */
 export class Stage {
   private composer: EffectComposer;
   private bloom: UnrealBloomPass;
   private lights: { mesh: THREE.Mesh; base: THREE.Vector3; phase: number; speed: number }[] = [];
   private t = 0;
+  private gradient!: THREE.Texture;
+  private pano: THREE.Texture | null = null;
+  private loadingScene = 0;
 
-  constructor(private renderer: THREE.WebGLRenderer, scene: THREE.Scene, camera: THREE.Camera) {
+  constructor(private renderer: THREE.WebGLRenderer, private scene: THREE.Scene, camera: THREE.Camera) {
     // Backdrop: a dusk gradient, darker toward the top so her face has the contrast.
     const c = document.createElement('canvas');
     c.width = 4;
@@ -26,6 +36,7 @@ export class Stage {
     const bg = new THREE.CanvasTexture(c);
     bg.colorSpace = THREE.SRGBColorSpace;
     scene.background = bg;
+    this.gradient = bg;
 
     // Out-of-focus lights drifting far behind her, like a city at night through a window.
     const dot = document.createElement('canvas');
@@ -63,6 +74,33 @@ export class Stage {
     this.bloom = new UnrealBloomPass(new THREE.Vector2(size.x, size.y), 0.09, 0.5, 0.97);
     this.composer.addPass(this.bloom);
     this.composer.addPass(new OutputPass());
+  }
+
+  /** Put her in one of SCENES, or back in front of the plain gradient with `null`. */
+  async setScene(id: string | null, baseUrl: string) {
+    const mine = ++this.loadingScene;
+    const def = id ? SCENES[id] : null;
+    let tex: THREE.Texture | null = null;
+    if (def) {
+      try { tex = await new THREE.TextureLoader().loadAsync(`${baseUrl}scenes/${def.file}`); } catch { tex = null; }
+      if (mine !== this.loadingScene) return tex?.dispose();
+    }
+    this.pano?.dispose();
+    this.pano = tex;
+    if (tex && def) {
+      tex.mapping = THREE.EquirectangularReflectionMapping;
+      tex.colorSpace = THREE.SRGBColorSpace;
+      this.scene.background = tex;
+      // Slightly out of focus and dimmed, so she stays the subject, like a portrait lens would do.
+      this.scene.backgroundBlurriness = 0.035;
+      this.scene.backgroundIntensity = 0.75;
+      this.scene.backgroundRotation.set(0, def.turn, 0);
+    } else {
+      this.scene.background = this.gradient;
+      this.scene.backgroundBlurriness = 0;
+      this.scene.backgroundIntensity = 1;
+    }
+    for (const l of this.lights) l.mesh.visible = !tex; // the drifting lights belong to the plain backdrop only
   }
 
   resize(width: number, height: number) {

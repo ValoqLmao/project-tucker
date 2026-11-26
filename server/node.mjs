@@ -5,6 +5,7 @@ import { WebSocketServer, WebSocket } from 'ws';
 import { startSession } from './src/session.js';
 import { personaList } from './src/personas.js';
 import { FISH_OFFICIAL, usableVoice, publicVoice } from './src/voices.js';
+import { issueToken, checkToken, sameString, tokenSecret, makeLimiter } from './src/auth.js';
 
 const PORT = Number(process.env.PORT || 8787);
 const ALLOWED = (process.env.ALLOWED_ORIGINS || 'http://localhost:5173,http://localhost:4173').split(',');
@@ -15,6 +16,9 @@ const HOST = process.env.HOST || '127.0.0.1';
 const MAX_SESSIONS_PER_IP = 2;
 const sessionsByIp = new Map();
 const voiceCache = new Map(); // search term -> { at, body }
+const GATED = !!env.ACCESS_CODE; // optional locally; the Cloudflare deployment requires it
+const allowGuess = makeLimiter();
+const authed = async (url) => !GATED || checkToken(tokenSecret(env), url.searchParams.get('t'));
 
 /** Wrap a `ws` socket in the small shape session.js expects. */
 function wrap(ws) {
@@ -40,11 +44,24 @@ const server = http.createServer(async (req, res) => {
   const url = new URL(req.url, 'http://x');
   const json = (code, body) => { res.writeHead(code, { 'content-type': 'application/json' }); res.end(JSON.stringify(body)); };
 
+  if (req.method === 'OPTIONS') { res.writeHead(204, { 'access-control-allow-methods': 'GET,POST', 'access-control-allow-headers': 'content-type' }); return res.end(); }
+  if (url.pathname === '/config') return json(200, { gate: GATED });
+  if (url.pathname === '/auth' && req.method === 'POST') {
+    if (!GATED) return json(200, { token: '' });
+    if (!allowGuess(req.socket.remoteAddress || '?')) return json(429, { error: 'Too many attempts. Try again in a few minutes.' });
+    let raw = '';
+    for await (const c of req) { raw += c; if (raw.length > 2000) break; }
+    let code = '';
+    try { code = String(JSON.parse(raw).code ?? ''); } catch {}
+    if (!sameString(code, env.ACCESS_CODE)) return json(401, { error: 'That code is not right.' });
+    return json(200, { token: await issueToken(tokenSecret(env)) });
+  }
   if (url.pathname === '/personas') return json(200, personaList());
 
   // Voices. With no search term: Fish Audio's own designed voices. With one: the community library.
   if (url.pathname === '/voices') {
     if (!origin || !ALLOWED.includes(origin)) return json(403, { error: 'forbidden' });
+    if (!(await authed(url))) return json(401, { error: 'unauthorized' });
     const term = (url.searchParams.get('q') || '').trim().slice(0, 60);
     const hit = voiceCache.get(term);
     if (hit && Date.now() - hit.at < 10 * 60 * 1000) return json(200, hit.body);
@@ -66,9 +83,10 @@ const server = http.createServer(async (req, res) => {
 });
 
 const wss = new WebSocketServer({ noServer: true });
-server.on('upgrade', (req, socket, head) => {
+server.on('upgrade', async (req, socket, head) => {
   const origin = req.headers.origin;
   if (new URL(req.url, 'http://x').pathname !== '/session' || !origin || !ALLOWED.includes(origin)) return socket.destroy();
+  if (!(await authed(new URL(req.url, 'http://x')))) return socket.destroy();
   const ip = req.socket.remoteAddress || '?';
   if ((sessionsByIp.get(ip) || 0) >= MAX_SESSIONS_PER_IP) return socket.destroy();
   wss.handleUpgrade(req, socket, head, (ws) => {

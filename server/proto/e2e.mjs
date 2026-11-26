@@ -13,7 +13,15 @@ function fishPcm16k(text) {
   });
 }
 
-const ws = new WebSocket('ws://127.0.0.1:8787/session', { origin: 'http://localhost:5173' });
+const BASE = process.env.E2E_BASE || 'http://127.0.0.1:8787';
+const ORIGIN = { origin: 'http://localhost:5173' };
+let token = '';
+if (process.env.E2E_CODE) {
+  const r = await fetch(BASE + '/auth', { method: 'POST', headers: { ...ORIGIN, 'content-type': 'application/json' }, body: JSON.stringify({ code: process.env.E2E_CODE }) });
+  token = (await r.json()).token || '';
+  console.log('  auth', r.status, token ? 'token issued' : 'no token');
+}
+const ws = new WebSocket(BASE.replace(/^http/, 'ws') + '/session?t=' + encodeURIComponent(token), ORIGIN);
 let t0 = 0, audio = 0, firstAudio = 0, text = '';
 ws.on('message', (d, bin) => {
   if (bin) { if (!firstAudio) { firstAudio = Date.now() - t0; console.log(`  first audio ${firstAudio} ms after end of input`); } audio += d.length; return; }
@@ -26,7 +34,7 @@ ws.on('message', (d, bin) => {
 });
 ws.on('open', async () => {
   ws.send(JSON.stringify({ type: 'config', persona: process.argv[3] || 'sweet' }));
-  if (mode === 'text') { t0 = Date.now(); return ws.send(JSON.stringify({ type: 'text', text: 'Hey, how was your day?' })); }
+  if (mode === 'text') { t0 = Date.now(); return ws.send(JSON.stringify({ type: 'text', text: process.argv[4] || 'Hey, how was your day?' })); }
   const pcm = await fishPcm16k('Hey, what is your favorite color, and why?');
   console.log(`  synthetic user speech: ${(pcm.length / 32000).toFixed(1)} s`);
   const frame = 2560, silence = Buffer.alloc(frame);

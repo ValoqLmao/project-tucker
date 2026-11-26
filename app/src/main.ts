@@ -2,7 +2,7 @@ import * as THREE from 'three';
 import { Avatar } from './avatar';
 import { VoiceSession, type ServerEvent } from './voice';
 import { setupVoicePicker } from './voicePicker';
-import { Stage } from './stage';
+import { Stage, SCENES } from './stage';
 
 // Where the session server lives. Empty in production builds until a backend is deployed.
 const API = (import.meta.env.VITE_API_URL as string | undefined) ?? (import.meta.env.DEV ? 'http://127.0.0.1:8787' : '');
@@ -42,6 +42,7 @@ let personas: Persona[] = [];
 const persona = () => personas.find((p) => p.id === personaSel.value) ?? { id: personaSel.value, name: 'Her' };
 const picker = setupVoicePicker({
   api: API,
+  token: () => token,
   dialog: $<HTMLDialogElement>('voices'),
   persona,
   onChange: (voice) => session?.configure(personaSel.value, voice),
@@ -49,6 +50,7 @@ const picker = setupVoicePicker({
 $('voiceBtn').onclick = () => picker.open();
 const BASELINE: Record<string, [string, number]> = { sweet: ['warm', 0.45], roast: ['smug', 0.3], mommy: ['soft', 0.6], spicy: ['flirty', 0.4], goblin: ['smug', 0.35] };
 const applyBaseline = () => avatar?.setBaseline(...(BASELINE[personaSel.value] ?? ['soft', 0.3]));
+let token = ''; // proof of the access code, when the server asks for one
 let userTalking = false;
 let thinking = false; // between the end of their turn and the first sound of her reply
 const focus = new THREE.Vector3(0, 1.4, 0); // smoothed head position the camera frames
@@ -107,6 +109,46 @@ async function setupModels() {
   await loadAvatar(modelSel.value);
 }
 
+/**
+ * The front door: confirm the visitor is an adult, and collect the access code if the server wants one.
+ * Resolves once they are in. Both answers are remembered in this browser.
+ */
+async function enter() {
+  if (!API) return;
+  const read = (k: string) => { try { return localStorage.getItem(k) || ''; } catch { return ''; } };
+  const write = (k: string, val: string) => { try { localStorage.setItem(k, val); } catch {} };
+  let gate = false;
+  try { gate = !!(await (await fetch(`${API}/config`)).json()).gate; } catch { return; } // unreachable server: loadPersonas reports it
+  token = read('tucker.token');
+  if (Number(token.split('.')[0]) * 1000 < Date.now() + 60_000) token = ''; // expired or about to
+  const adult = read('tucker.adult') === 'yes';
+  if (adult && (!gate || token)) return;
+
+  const box = $('gate'), form = $<HTMLFormElement>('gateForm'), code = $<HTMLInputElement>('gateCode'), err = $('gateError'), age = $<HTMLInputElement>('gateAge');
+  $('gateCodeRow').hidden = !gate || !!token;
+  age.checked = adult;
+  box.hidden = false;
+  await new Promise<void>((done) => {
+    form.onsubmit = async (ev) => {
+      ev.preventDefault();
+      err.textContent = '';
+      if (!age.checked) { err.textContent = 'This is for adults only.'; return; }
+      if (gate && !token) {
+        try {
+          const r = await fetch(`${API}/auth`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ code: code.value.trim() }) });
+          const j = await r.json();
+          if (!r.ok) { err.textContent = j.error || 'That code is not right.'; return; }
+          token = j.token;
+          write('tucker.token', token);
+        } catch { err.textContent = 'Could not reach the server. Try again.'; return; }
+      }
+      write('tucker.adult', 'yes');
+      box.hidden = true;
+      done();
+    };
+  });
+}
+
 async function loadPersonas() {
   if (!API) return;
   try {
@@ -135,7 +177,7 @@ function onEvent(e: ServerEvent) {
 
 async function ensureSession(): Promise<VoiceSession> {
   if (session) return session;
-  const s = new VoiceSession(API.replace(/^http/, 'ws') + '/session');
+  const s = new VoiceSession(API.replace(/^http/, 'ws') + '/session?t=' + encodeURIComponent(token));
   s.onEvent = onEvent;
   s.onClose = () => { session = null; talk.setAttribute('aria-pressed', 'false'); talk.textContent = 'Start talking'; };
   await s.connect();
@@ -192,12 +234,20 @@ renderer.setAnimationLoop(() => {
 });
 
 setupModels();
-loadPersonas();
+enter().then(loadPersonas);
+
+// Scene picker
+const sceneSel = $<HTMLSelectElement>('scene');
+sceneSel.replaceChildren(...Object.entries(SCENES).map(([id, s]) => new Option(s.label, id)), new Option('Plain', ''));
+try { const saved = localStorage.getItem('tucker.scene'); if (saved !== null && [...sceneSel.options].some((o) => o.value === saved)) sceneSel.value = saved; } catch {}
+sceneSel.onchange = () => { try { localStorage.setItem('tucker.scene', sceneSel.value); } catch {} stage.setScene(sceneSel.value || null, BASE); };
+stage.setScene(sceneSel.value || null, BASE);
 
 // Development aid: sample what the lip sync and face are doing from the console.
 if (import.meta.env.DEV) {
   Object.defineProperty(window, '__avatar', { get: () => avatar });
   (window as any).__camera = camera;
+  (window as any).__scene = scene;
   (window as any).__probe = (ms = 4000) =>
     new Promise((resolve) => {
       const rows: string[] = [];

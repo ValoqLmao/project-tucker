@@ -22,9 +22,18 @@
   #say { display: flex; gap: 8px; flex: 1 1 260px; }
   #text { flex: 1; }
   #persona { flex: 1 1 45%; }
-  #model { flex: 0 1 150px; }
+  #model, #scene { flex: 0 1 130px; }
   dialog { background: #17151d; color: inherit; border: 1px solid #3a3548; border-radius: 16px; padding: 18px; width: min(620px, calc(100vw - 32px)); max-height: min(80vh, 720px); box-sizing: border-box; }
   dialog[open] { display: flex; flex-direction: column; gap: 10px; }
+  #gate { position: fixed; inset: 0; display: grid; place-items: center; background: #0c0a12e6; padding: 16px; z-index: 5; }
+  #gate[hidden] { display: none; }
+  #gateForm { background: #17151d; border: 1px solid #3a3548; border-radius: 16px; padding: 22px; width: min(380px, 100%); display: grid; gap: 12px; }
+  #gateForm h2 { margin: 0; font-size: 19px; } #gateForm p { margin: 0; color: #c9c2d6; font-size: 14px; }
+  #gateForm label { display: grid; gap: 6px; font-size: 14px; } #gateForm label.check { display: flex; align-items: center; gap: 8px; }
+  #gateForm label[hidden] { display: none; }
+  #gateForm input[type=password] { border-radius: 10px; } #gateForm input[type=checkbox] { width: 18px; height: 18px; padding: 0; }
+  #gateForm button { background: #ff7ab8; color: #14121b; border-color: #ff7ab8; font-weight: 600; }
+  #gateError { color: #ff9a9a !important; min-height: 1.2em; }
   dialog::backdrop { background: #000a; }
   dialog h2 { margin: 0; font-size: 18px; }
   .vsearch { display: flex; gap: 8px; } .vsearch input { flex: 1; }
@@ -49,11 +58,22 @@
     <select id="persona" aria-label="Personality"></select>
     <button id="voiceBtn" type="button">Voice</button>
     <select id="model" aria-label="Character model" hidden></select>
+    <select id="scene" aria-label="Scene"></select>
     <button id="talk" aria-pressed="false">Start talking</button>
     <form id="say"><input id="text" placeholder="or type to her…" autocomplete="off" aria-label="Message"><button>Send</button></form>
   </div>
 </div>
 <dialog id="voices"></dialog>
+<div id="gate" hidden>
+  <form id="gateForm">
+    <h2>Before you come in</h2>
+    <p>This is a voice companion for adults. Some personalities swear, flirt or get explicit.</p>
+    <label class="check"><input type="checkbox" id="gateAge"> I am 18 or older</label>
+    <label id="gateCodeRow">Access code<input id="gateCode" type="password" autocomplete="off"></label>
+    <p id="gateError" role="alert"></p>
+    <button>Enter</button>
+  </form>
+</div>
 <script type="module" src="/src/main.ts"></script>
 </body>
 </html>

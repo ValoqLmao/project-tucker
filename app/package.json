@@ -5,7 +5,8 @@
   "scripts": {
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
-    "preview": "vite preview"
+    "preview": "vite preview",
+    "build:pages": "tsc --noEmit && vite build --outDir dist --emptyOutDir"
   },
   "dependencies": {
     "@pixiv/three-vrm": "^3.6.0",

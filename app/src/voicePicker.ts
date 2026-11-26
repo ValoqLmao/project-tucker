@@ -20,6 +20,7 @@ function saveChoices(c: Record<string, string>) {
 
 export function setupVoicePicker(opts: {
   api: string;
+  token: () => string;
   dialog: HTMLDialogElement;
   persona: () => { id: string; name: string; voice?: string };
   onChange: (voice: string | null) => void;
@@ -71,7 +72,7 @@ export function setupVoicePicker(opts: {
       : 'Original voices made by Fish Audio. Search above to browse the community library.';
     let voices: Voice[];
     try {
-      const r = await fetch(`${opts.api}/voices?q=${encodeURIComponent(term)}`);
+      const r = await fetch(`${opts.api}/voices?q=${encodeURIComponent(term)}&t=${encodeURIComponent(opts.token())}`);
       if (!r.ok) throw new Error();
       voices = await r.json();
     } catch {

@@ -1,8 +1,8 @@
 {
   "project": "Project Tucker",
   "tagline": "A real-time talking 3D anime companion for the web, built in the open.",
-  "phase": "Polish",
-  "focus": "Added reaction moves (shoulder-shaking laugh, shy look away, shrug, head toss, sigh), a cheek blush and eye sparkle that work on any model, a soft glow, and a dusk backdrop with drifting lights.",
+  "phase": "Deployment",
+  "focus": "Real panoramic scenes behind her, tougher banter from the roast personas, and everything needed to host it: a Cloudflare Workers version of the session server and an entry screen with an 18+ check and access code.",
   "appUrl": "app/",
   "milestones": [
     {
@@ -23,19 +23,19 @@
     },
     {
       "name": "Character model (switchable locally)",
-      "state": "doing"
+      "state": "done"
     },
     {
       "name": "Voice loop: mic in, streamed reply, lip sync, interruptions",
-      "state": "doing"
+      "state": "done"
     },
     {
       "name": "Personas and emotion-driven expressions",
-      "state": "doing"
+      "state": "done"
     },
     {
       "name": "Hosting for the API side + custom domain",
-      "state": "todo"
+      "state": "doing"
     }
   ]
 }

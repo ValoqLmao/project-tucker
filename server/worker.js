@@ -1,0 +1,110 @@
+// Cloudflare Workers host for the session server.
+// The Worker answers the small HTTP endpoints; each voice conversation runs in its own Durable
+// Object, which holds the browser's WebSocket and the outbound ones to the speech providers.
+import { startSession } from './src/session.js';
+import { personaList } from './src/personas.js';
+import { FISH_OFFICIAL, usableVoice, publicVoice } from './src/voices.js';
+import { issueToken, checkToken, sameString, tokenSecret, makeLimiter } from './src/auth.js';
+
+const SESSION_LIMIT_MS = 45 * 60 * 1000;
+const allowGuess = makeLimiter();
+const voiceCache = new Map(); // search term -> { at, body }
+
+const json = (body, status = 200, headers = {}) =>
+  new Response(JSON.stringify(body), { status, headers: { 'content-type': 'application/json', ...headers } });
+
+export default {
+  async fetch(req, env) {
+    const url = new URL(req.url);
+    const allowed = (env.ALLOWED_ORIGINS || '').split(',').map((s) => s.trim()).filter(Boolean);
+    const origin = req.headers.get('origin');
+    if (!origin || !allowed.includes(origin)) return json({ error: 'forbidden' }, 403);
+    const cors = { 'access-control-allow-origin': origin, vary: 'origin' };
+    if (req.method === 'OPTIONS') {
+      return new Response(null, { status: 204, headers: { ...cors, 'access-control-allow-methods': 'GET,POST', 'access-control-allow-headers': 'content-type', 'access-control-max-age': '86400' } });
+    }
+
+    // A public deployment without a gate lets anyone spend the owner's API credit, so that has to be asked for.
+    const gated = !!env.ACCESS_CODE;
+    if (!gated && env.OPEN_ACCESS !== 'yes') return json({ error: 'Server is not configured: set the ACCESS_CODE secret.' }, 503, cors);
+    const authed = async () => !gated || checkToken(tokenSecret(env), url.searchParams.get('t'));
+
+    if (url.pathname === '/config') return json({ gate: gated }, 200, cors);
+
+    if (url.pathname === '/auth' && req.method === 'POST') {
+      if (!gated) return json({ token: '' }, 200, cors);
+      if (!allowGuess(req.headers.get('cf-connecting-ip') || 'unknown')) return json({ error: 'Too many attempts. Try again in a few minutes.' }, 429, cors);
+      const body = await req.json().catch(() => ({}));
+      if (!sameString(String(body.code ?? ''), env.ACCESS_CODE)) return json({ error: 'That code is not right.' }, 401, cors);
+      return json({ token: await issueToken(tokenSecret(env)) }, 200, cors);
+    }
+
+    if (url.pathname === '/personas') return json(personaList(), 200, cors);
+
+    if (url.pathname === '/voices') {
+      if (!(await authed())) return json({ error: 'unauthorized' }, 401, cors);
+      const term = (url.searchParams.get('q') || '').trim().slice(0, 60);
+      const hit = voiceCache.get(term);
+      if (hit && Date.now() - hit.at < 10 * 60 * 1000) return json(hit.body, 200, cors);
+      const q = new URLSearchParams({ page_size: '100', sort_by: 'task_count', language: 'en' });
+      if (term) { q.set('title', term); q.set('page_size', '40'); } else q.set('author_id', FISH_OFFICIAL);
+      const r = await fetch('https://api.fish.audio/model?' + q, { headers: { Authorization: 'Bearer ' + env.FISH_API_KEY } }).catch(() => null);
+      if (!r?.ok) return json({ error: 'voice library unavailable' }, 502, cors);
+      const { items = [] } = await r.json();
+      const body = items.filter(usableVoice).filter((v) => term || v.tags?.includes('female')).map(publicVoice);
+      if (voiceCache.size > 200) voiceCache.clear();
+      voiceCache.set(term, { at: Date.now(), body });
+      return json(body, 200, cors);
+    }
+
+    if (url.pathname === '/session') {
+      if (req.headers.get('upgrade')?.toLowerCase() !== 'websocket') return json({ error: 'expected a WebSocket' }, 426, cors);
+      if (!(await authed())) return json({ error: 'unauthorized' }, 401, cors);
+      return env.SESSION.get(env.SESSION.newUniqueId()).fetch(req);
+    }
+
+    return json({ error: 'not found' }, 404, cors);
+  },
+};
+
+/** Wrap a Workers WebSocket in the small shape session.js expects. */
+function wrap(ws) {
+  try { ws.binaryType = 'arraybuffer'; } catch {}
+  const s = {
+    send: (d) => { try { ws.send(d); } catch {} },
+    close: () => { try { ws.close(1000, 'done'); } catch {} },
+    onmessage: null,
+    onclose: null,
+  };
+  let closed = false;
+  const end = () => { if (!closed) { closed = true; s.onclose?.(); } };
+  ws.addEventListener('message', (e) => {
+    if (typeof e.data === 'string') s.onmessage?.(e.data, false);
+    else s.onmessage?.(new Uint8Array(e.data), true);
+  });
+  ws.addEventListener('close', end);
+  ws.addEventListener('error', end);
+  return s;
+}
+
+export class Session {
+  constructor(_state, env) { this.env = env; }
+
+  async fetch() {
+    const [client, server] = Object.values(new WebSocketPair());
+    server.accept();
+
+    // Outbound WebSockets from a Worker are opened with fetch + Upgrade, which is also the only
+    // way to send the Authorization header the speech providers require.
+    const openUpstream = async (url, headers) => {
+      const res = await fetch(url.replace(/^wss:/, 'https:'), { headers: { ...headers, Upgrade: 'websocket' } });
+      if (!res.webSocket) throw new Error(`upstream refused the connection (HTTP ${res.status})`);
+      res.webSocket.accept();
+      return wrap(res.webSocket);
+    };
+
+    startSession({ client: wrap(server), openUpstream, env: this.env, log: (...a) => console.log(...a) });
+    setTimeout(() => { try { server.close(1000, 'session time limit'); } catch {} }, SESSION_LIMIT_MS);
+    return new Response(null, { status: 101, webSocket: client });
+  }
+}
