@@ -49,6 +49,7 @@ export default {
       if (!(await authed())) return json({ error: 'unauthorized' }, 401, cors);
       let key = '';
       try { key = decodeURIComponent(url.pathname.slice('/assets/'.length)); } catch {}
+      if (key.replace(/^\/+/, '').toLowerCase().startsWith('recordings')) return json({ error: 'not found' }, 404, cors); // recordings are never served
       if (key === 'index.json') {
         const list = await env.ASSETS.list({ prefix: 'models/', limit: 200 });
         const models = list.objects.map((o) => o.key.slice('models/'.length)).filter((n) => /\.vrm$/i.test(n)).sort();

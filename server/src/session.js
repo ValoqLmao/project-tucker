@@ -92,7 +92,8 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
 
   // ---- recording --------------------------------------------------------------
   const startedAt = new Date();
-  const sessionId = startedAt.toISOString().replace(/[:.]/g, '-') + '-' + Math.random().toString(36).slice(2, 8);
+  // The folder name is unguessable (random UUID), on top of the bucket never being served publicly.
+  const sessionId = startedAt.toISOString().replace(/[:.]/g, '-') + '-' + crypto.randomUUID();
   const folder = `recordings/${sessionId.slice(0, 10)}/${sessionId}`;
   const record = { id: sessionId, startedAt: startedAt.toISOString(), llm: llmConfig(env).model, turns: [] };
   let turnSeq = 0;
