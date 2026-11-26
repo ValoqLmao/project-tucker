@@ -70,7 +70,8 @@ function wav(chunks, sampleRate) {
 
 const MIC_RATE = 16000;
 const PREROLL_FRAMES = 15; // ~1.2 s kept from before speech is detected, so the first word is not clipped
-const MAX_TURN_FRAMES = 1125; // ~90 s of microphone audio per turn
+const MAX_FRAME_BYTES = 8192; // largest microphone frame accepted
+const MAX_TURN_BYTES = 90 * MIC_RATE * 2; // ~90 s of microphone audio kept per turn
 const MAX_REPLY_BYTES = 6 * 1024 * 1024; // ~2 minutes of voice per reply
 
 /**
@@ -105,13 +106,20 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
   };
   const saveTranscript = () => { if (store && record.turns.length) putSafe(`${folder}/transcript.json`, JSON.stringify(record, null, 1), 'application/json'); };
   const pad = (n) => String(n).padStart(3, '0');
-  let preroll = [], capturing = null;
+  let preroll = [], capturing = null, capturedBytes = 0;
 
   // ---- speech to text -------------------------------------------------------
   function onMicAudio(frame) {
+    // The app sends 2,560-byte frames (80 ms). Anything much larger is not from the app: drop it
+    // rather than forward it or hold it in memory.
+    if (frame.length > MAX_FRAME_BYTES) return;
     if (store) {
-      if (capturing) { if (capturing.length < MAX_TURN_FRAMES) capturing.push(frame); }
-      else { preroll.push(frame); if (preroll.length > PREROLL_FRAMES) preroll.shift(); }
+      if (capturing) {
+        if (capturedBytes + frame.length <= MAX_TURN_BYTES) { capturing.push(frame); capturedBytes += frame.length; }
+      } else {
+        preroll.push(frame);
+        if (preroll.length > PREROLL_FRAMES) preroll.shift();
+      }
     }
     if (stt) return stt.send(frame);
     if (sttBacklog.length < 100) sttBacklog.push(frame);
@@ -131,7 +139,7 @@ export function startSession({ client, openUpstream, env, store = null, log = ()
     if (m.event === 'StartOfTurn') {
       interrupt(); // they started talking: stop talking over them
       send({ type: 'user_start' });
-      if (store && !capturing) { capturing = preroll; preroll = []; }
+      if (store && !capturing) { capturing = preroll; capturedBytes = preroll.reduce((n, f) => n + f.length, 0); preroll = []; }
       warmTts ??= openTts(); // connecting takes ~300 ms, so do it while they speak
     } else if (m.event === 'Update' || m.event === 'TurnResumed') {
       send({ type: 'user_partial', text: m.transcript });

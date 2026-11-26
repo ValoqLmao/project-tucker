@@ -95,7 +95,7 @@ const server = http.createServer(async (req, res) => {
   json(404, { error: 'not found' });
 });
 
-const wss = new WebSocketServer({ noServer: true });
+const wss = new WebSocketServer({ noServer: true, maxPayload: 64 * 1024 });
 server.on('upgrade', async (req, socket, head) => {
   const origin = req.headers.origin;
   if (new URL(req.url, 'http://x').pathname !== '/session' || !origin || !ALLOWED.includes(origin)) return socket.destroy();
